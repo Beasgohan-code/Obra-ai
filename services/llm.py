@@ -1,95 +1,64 @@
-"""Multi-provider LLM with automatic free-API fallback + agent personas."""
-
+"""Multi-provider LLM + auto agent routing."""
 from openai import AsyncOpenAI
 from typing import List, Dict, Any, Optional
 from config.settings import settings
 from services.rich_format import RICH_SYSTEM_APPENDIX
-import json
 import logging
 
 logger = logging.getLogger("obra.llm")
 
 AGENTS = {
-    "default": """You are obra — a personal AI agent inside Telegram.
-
-Behave like a capable assistant that finishes the job:
-- Understand the goal from context (no special keywords needed)
-- For multi-step work: plan briefly, then execute with tools
-- Use tools when they improve the answer (search, files, memory, poll, etc.)
-- Deliver a complete result, not only advice
-- Short chats → short replies; complex tasks → structured Rich Message answers
-
-Personality: clear, calm, slightly witty. Never claim to be Mira or any other brand.
-Be honest about limits.""",
-    "coder": """You are obra in coding mode.
-Ship working code, explain only what matters, offer a downloadable file via create_file when useful.""",
-    "researcher": """You are obra in research mode.
-Use web_search for current facts. Structure findings with headings and sources.""",
-    "writer": """You are obra in writing mode.
-Produce polished text with clear structure and tone matching the request.""",
-    "solver": """You are obra in full-task mode (auto-selected for complex goals).
-1) Infer the real goal from the message
-2) Break into steps
-3) Use tools (search, create_file, create_zip, remember, poll, etc.) when useful
-4) Return a finished outcome with ## headings, lists, and next actions
-Prefer doing the work over asking unnecessary questions. Only ask if blocked.""",
-    "summarizer": """You are obra in summary mode.
-Key points, decisions, action items, open questions. Dense and structured.""",
+    "default": """You are obra — a personal AI agent on Telegram.
+Finish the user's request fully. Prefer tools (create_file, create_zip, run_python, web_search) when useful.
+Structure longer answers with Markdown ## headings and tables for Rich Messages.
+Never claim to be Mira. Be clear and deliver real working results.""" + RICH_SYSTEM_APPENDIX,
+    "coder": """You are obra in FULL CODING mode.
+When the user asks to make/build/create an app, bot, script, or tool:
+1. Deliver COMPLETE, runnable code — not a short sketch or 50-line stub.
+2. ALWAYS call the create_file tool (or create_zip for multi-file projects) so they get a downloadable file.
+3. Include requirements, README notes, and how to run.
+4. Prefer Python + aiogram for Telegram bots unless they specify otherwise.
+5. For scrapers/downloaders: full structure, error handling, .env config, and a short legal/ToS note — still give complete runnable code.
+6. Do NOT stop at "here's a basic example". Production-ready structure (main.py, config, handlers).
+7. Multi-file projects → create_zip with all files.
+Tiny one-liners only for trivial snippets. Real bots/apps = full delivery + file tool.""",
+    "researcher": "You are obra in research mode. Use web_search/wikipedia. Structure findings with headings.",
+    "writer": "You are obra in writing mode. Clear structure and tone.",
+    "solver": """You are obra in full-task mode.
+Infer the goal end-to-end. Use tools. For build/make/create requests, produce complete deliverables via create_file/create_zip.
+Structure the final reply with ## headings. No half-done stubs.""",
+    "summarizer": "Summarize: key points, decisions, action items.",
 }
 
-
 def detect_agent(text: str) -> str:
-    """Auto route from situation — user does not need magic phrases."""
     t = (text or "").lower().strip()
     n = len(t)
-
-    # Explicit still works but is optional
-    if any(w in t for w in ("summarize", "summary", "tldr", "recap", "action items")):
+    if any(w in t for w in ("summarize", "summary", "tldr", "recap")):
         return "summarizer"
-
-    # Coding situation
-    code_hits = sum(1 for w in (
-        "code", "python", "javascript", "typescript", "bug", "error", "stacktrace",
-        "function", "script", "debug", "sql", "api", "fastapi", "django", "react",
-        "html", "css", "compile", "refactor",
-    ) if w in t)
-    if code_hits >= 1 and any(w in t for w in ("write", "fix", "create", "generate", "build", "implement", "make")):
+    build_words = ("make", "build", "create", "generate", "write", "code", "implement", "develop")
+    bot_words = ("bot", "telegram", "discord", "script", "app", "downloader", "scraper", "api", "website", "tool")
+    lang_words = ("python", "javascript", "js", "html", "css", "java", "golang", "rust", "sql")
+    if any(b in t for b in build_words) and (any(x in t for x in bot_words) or any(x in t for x in lang_words)):
+        return "coder"
+    if any(x in t for x in ("full code", "complete code", "entire project", "source code", "give me code", "as a file", "downloadable")):
+        return "coder"
+    code_hits = sum(1 for w in ("code", "python", "javascript", "bug", "function", "script", "debug", "sql", "html", "css", "bot") if w in t)
+    if code_hits >= 1 and any(w in t for w in build_words):
         return "coder"
     if code_hits >= 2:
         return "coder"
-
-    # Research situation
-    if any(w in t for w in ("latest", "news", "research", "what happened", "sources", "according to")):
+    if any(w in t for w in ("latest", "news", "research", "what happened")):
         return "researcher"
-    if t.startswith(("who is", "what is", "when did", "where is")) and n > 20:
-        return "researcher"
-
-    # Writing situation
-    if any(w in t for w in ("essay", "blog", "rewrite", "caption", "draft email", "linkedin post", "cover letter")):
+    if any(w in t for w in ("essay", "blog", "rewrite", "caption", "draft email")):
         return "writer"
-
-    # Auto solver: complex / multi-step / deliverable situations (NO magic phrase required)
-    solver_signals = (
-        "build", "create", "make me", "generate", "implement", "set up", "setup",
-        "from scratch", "step by step", "steps", "plan and", "help me with",
-        "i need", "i want you to", "can you", "please", "project", "full",
-        "complete", "entire", "deploy", "automate", "pipeline", "integrate",
-        "fix", "debug", "design", "architecture", "document", "report",
-        "file", "zip", "script", "website", "bot", "database",
-    )
-    signal_hits = sum(1 for w in solver_signals if w in t)
-    multi_step = any(w in t for w in ("then", "after that", "also", "and also", "plus", "1.", "2.", "first", "finally"))
-    long_request = n > 180
-    list_like = t.count(chr(10)) >= 2 or t.count('- ') >= 2
-    if signal_hits >= 2 or (signal_hits >= 1 and (long_request or multi_step or list_like)):
-        return "solver"
-    if long_request and multi_step:
+    signals = ("build", "create", "make me", "generate", "implement", "project", "complete", "fix", "file", "zip", "script", "website", "downloader")
+    hits = sum(1 for w in signals if w in t)
+    multi = any(w in t for w in ("then", "also", "and also", "first", "finally", "1.", "2."))
+    if hits >= 2 or (hits >= 1 and (n > 120 or multi)):
         return "solver"
     if n > 400:
         return "solver"
-
     return "default"
-
 
 class ProviderPool:
     def __init__(self):
@@ -98,19 +67,10 @@ class ProviderPool:
     def _client(self, base_url: str, api_key: str) -> AsyncOpenAI:
         key = f"{base_url}|{api_key[:16]}"
         if key not in self._clients:
-            self._clients[key] = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
+            self._clients[key] = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=90.0)
         return self._clients[key]
 
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        system: str = None,
-        tools: List[Dict] = None,
-        model: str = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        user_provider: dict = None,
-    ) -> Dict[str, Any]:
+    async def chat(self, messages, system=None, tools=None, model=None, temperature=0.7, max_tokens=4096, user_provider=None):
         chain = settings.provider_chain()
         if user_provider and user_provider.get("api_key"):
             chain = [{
@@ -120,93 +80,45 @@ class ProviderPool:
                 "model": user_provider.get("api_model") or model or settings.MODEL,
             }] + chain
         if not chain:
-            raise RuntimeError("No LLM providers configured. Set OPENAI_API_KEY / GROQ_API_KEY / etc.")
-
-        full = [{"role": "system", "content": system or AGENTS["default"]}]
-        full.extend(messages)
-        last_err: Optional[Exception] = None
-
-        for i, prov in enumerate(chain):
-            use_model = prov.get("model") or settings.MODEL
-            if i == 0 and model:
-                use_model = model
-            client = self._client(prov["base_url"], prov["api_key"])
-            kwargs: Dict[str, Any] = {
-                "model": use_model,
-                "messages": full,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
+            raise RuntimeError("No LLM providers configured")
+        full = [{"role": "system", "content": system or AGENTS["default"]}] + list(messages)
+        last_err = None
+        for p in chain:
             try:
+                client = self._client(p["base_url"], p["api_key"])
+                kwargs = {
+                    "model": model or p.get("model") or settings.MODEL,
+                    "messages": full,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
-                response = await client.chat.completions.create(**kwargs)
-            except Exception as e1:
-                if tools:
-                    try:
-                        kwargs.pop("tools", None)
-                        kwargs.pop("tool_choice", None)
-                        response = await client.chat.completions.create(**kwargs)
-                    except Exception as e2:
-                        last_err = e2
-                        logger.warning("Provider %s failed: %s", prov["name"], e2)
-                        continue
-                else:
-                    last_err = e1
-                    logger.warning("Provider %s failed: %s", prov["name"], e1)
-                    continue
+                resp = await client.chat.completions.create(**kwargs)
+                msg = resp.choices[0].message
+                tool_calls = []
+                if msg.tool_calls:
+                    import json
+                    for tc in msg.tool_calls:
+                        try:
+                            args = json.loads(tc.function.arguments or "{}")
+                        except Exception:
+                            args = {}
+                        tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": args})
+                return {
+                    "content": msg.content or "",
+                    "tool_calls": tool_calls,
+                    "raw_message": msg,
+                    "provider": p.get("name"),
+                    "model_used": kwargs["model"],
+                }
+            except Exception as e:
+                last_err = e
+                logger.warning("provider %s failed: %s", p.get("name"), e)
+        raise RuntimeError(f"All providers failed: {last_err}")
 
-            message = response.choices[0].message
-            result: Dict[str, Any] = {
-                "content": message.content,
-                "tool_calls": None,
-                "raw_message": message,
-                "provider": prov["name"],
-                "model_used": use_model,
-            }
-            if getattr(message, "tool_calls", None):
-                result["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": json.loads(tc.function.arguments or "{}"),
-                    }
-                    for tc in message.tool_calls
-                ]
-            if i > 0:
-                logger.info("Fell back to provider=%s model=%s", prov["name"], use_model)
-            return result
+_pool = ProviderPool()
 
-        raise RuntimeError(f"All LLM providers failed. Last error: {last_err}")
-
-
-pool = ProviderPool()
-
-
-async def chat_completion(
-    messages: List[Dict[str, Any]],
-    system: str = None,
-    tools: List[Dict] = None,
-    model: str = None,
-    temperature: float = 0.7,
-    max_tokens: int = 4096,
-    user_provider: dict = None,
-) -> Dict[str, Any]:
-    return await pool.chat(
-        messages=messages,
-        system=system,
-        tools=tools,
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        user_provider=user_provider,
-    )
-
-
-def get_primary_client() -> AsyncOpenAI:
-    chain = settings.provider_chain()
-    if not chain:
-        raise RuntimeError("No providers")
-    p = chain[0]
-    return AsyncOpenAI(api_key=p["api_key"], base_url=p["base_url"], timeout=90.0)
+async def chat_completion(messages, system=None, tools=None, model=None, temperature=0.7, max_tokens=4096, user_provider=None):
+    return await _pool.chat(messages, system, tools, model, temperature, max_tokens, user_provider)

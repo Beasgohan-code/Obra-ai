@@ -1,60 +1,21 @@
-"""Restricted Python sandbox for short snippets."""
-
 from __future__ import annotations
-import io
-import contextlib
-import traceback
+import io, contextlib, traceback
 from typing import Tuple
+_SAFE = {"abs":abs,"all":all,"any":any,"bool":bool,"dict":dict,"enumerate":enumerate,"float":float,"int":int,"len":len,"list":list,"max":max,"min":min,"print":print,"range":range,"round":round,"set":set,"sorted":sorted,"str":str,"sum":sum,"tuple":tuple,"zip":zip}
+_BANNED = ("import","open(","exec(","eval(","__","os.","sys.","subprocess","socket")
 
-# Very small builtin allowlist
-_SAFE_BUILTINS = {
-    "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
-    "enumerate": enumerate, "float": float, "int": int, "len": len,
-    "list": list, "max": max, "min": min, "print": print, "range": range,
-    "reversed": reversed, "round": round, "set": set, "sorted": sorted,
-    "str": str, "sum": sum, "tuple": tuple, "zip": zip, "map": map, "filter": filter,
-    "isinstance": isinstance, "type": type, "None": None, "True": True, "False": False,
-}
-
-_BANNED = (
-    "import", "open(", "exec(", "eval(", "__", "os.", "sys.", "subprocess",
-    "socket", "requests", "pathlib", "shutil", "ctypes", "multiprocessing",
-)
-
-
-def run_python(code: str, timeout_hint: int = 3) -> Tuple[str, bool]:
-    """
-    Execute a short Python snippet in a restricted globals dict.
-    Not a perfect jail — good enough for demos; do not expose to untrusted public without stronger isolation.
-    """
+def run_python(code: str) -> Tuple[str, bool]:
     src = (code or "").strip()
-    if not src:
-        return "Empty code.", False
-    if len(src) > 8000:
-        return "Code too long (max 8000 chars).", False
+    if not src or len(src) > 8000:
+        return "Empty or too long", False
     low = src.lower()
     for b in _BANNED:
         if b in low:
-            return f"Blocked for safety (contains `{b}`).", False
-
-    stdout = io.StringIO()
-    glb = {"__builtins__": _SAFE_BUILTINS}
-    loc = {}
+            return f"Blocked ({b})", False
+    out = io.StringIO()
     try:
-        with contextlib.redirect_stdout(stdout):
-            exec(compile(src, "<obra_sandbox>", "exec"), glb, loc)
-        out = stdout.getvalue()
-        # show last assigned expr-ish values lightly
-        extras = []
-        for k, v in list(loc.items())[-5:]:
-            if not k.startswith("_"):
-                try:
-                    extras.append(f"{k} = {repr(v)[:200]}")
-                except Exception:
-                    pass
-        text = out
-        if extras and not out:
-            text = "\n".join(extras)
-        return (text or "(ran successfully, no output)")[:4000], True
+        with contextlib.redirect_stdout(out):
+            exec(compile(src, "<obra>", "exec"), {"__builtins__": _SAFE}, {})
+        return (out.getvalue() or "(ok, no output)")[:4000], True
     except Exception:
         return traceback.format_exc()[-2500:], False

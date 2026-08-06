@@ -1,28 +1,22 @@
-**Package:** `Obra-ai.zip`
+# Obra AI
 
-# Obra AI — self-hosted multi-language AI agent
+Telegram AI agent (aiogram 3.30+, Bot API 10.x Rich Messages).
 
-## Features
-
-- Multi-agent + tools + Rich Messages + vector memory + auto-facts  
-- **Multi-language** (`/lang en|hi|es|…`) — replies follow user language  
-- **TTS** (`/tts on|off`) — voice note replies  
-- **Inline mode** — `@bot your question`  
-- **BYOK** — `/setkey` personal LLM key  
-- **Projects** — `/project title` named chats  
-- **Confirm-before-send** for Gmail  
-- Skills + cron, vision, voice STT, documents, Gmail/Calendar  
-- Rate limits, dashboard, Mini App, webhook  
-- **deploy.md** + **Api.md**
-
-## Quick start
-
+## Run
 ```bash
-unzip obra_full.zip && cd obra_full
+cd Obra-ai
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env   # set BOT_TOKEN + LLM keys
 python -m bot.main
 ```
 
-Just chat with the bot. Commands: `/start` `/help` `/clear` `/skill` `/lang` `/memory`.
+## Scheduler
+```
+/skill every 1 minutes: send me hi
+/skill list
+```
+User must have started the bot in **private chat**. Keep process running (Render: Background Worker).
+
+## Commands
+/start /help /clear /skill /lang /memory

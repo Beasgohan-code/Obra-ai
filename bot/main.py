@@ -18,7 +18,7 @@ from handlers.media import router as media_router
 from handlers.inline import router as inline_router
 from handlers.callbacks import router as callbacks_router
 from web.dashboard import app as fastapi_app
-from services.scheduler import start_scheduler
+from services.scheduler import start_scheduler, reload_skills_now
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("obra")
@@ -88,6 +88,10 @@ async def main():
     dp = build_dispatcher()
     start_scheduler(bot)
     try:
+        await reload_skills_now()
+    except Exception as e:
+        logger.warning("initial skill load: %s", e)
+    try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Start"),
             BotCommand(command="help", description="Help"),
@@ -100,6 +104,16 @@ async def main():
         pass
     mode = (settings.MODE or "polling").lower()
     logger.info(f"Starting obra mode={mode}")
+    # startup self-check
+    try:
+        from services.tools import TOOLS
+        from services.scheduler import start_scheduler as _ss
+        logger.info("self_check tools=%s rich=%s scheduler=%s",
+                    len(TOOLS),
+                    getattr(settings, "USE_RICH_MESSAGES", True),
+                    getattr(settings, "ENABLE_SCHEDULER", True))
+    except Exception as e:
+        logger.warning("self_check: %s", e)
 
     if mode == "webhook" and settings.WEBHOOK_URL:
         await asyncio.gather(run_webhook(bot, dp), run_dashboard())

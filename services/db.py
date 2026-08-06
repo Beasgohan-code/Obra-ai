@@ -143,6 +143,15 @@ class Database:
             )
             await db.commit()
 
+    async def set_memory_kv(self, user_id: int, key: str, value: str):
+        mem = await self.get_user_memory(user_id) or {}
+        prefs = mem.get("preferences") or {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+        prefs[str(key)] = str(value)
+        await self.set_user_memory(user_id, preferences=prefs)
+        return True
+
     async def get_user_memory(self, user_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
