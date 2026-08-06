@@ -263,8 +263,8 @@ TOOLS = [
                 "properties": {
                     "question": {"type": "string"},
                     "options": {"type": "array", "items": {"type": "string"}},
-                    "is_anonymous": {"type": "boolean", "default": true},
-                    "allows_multiple_answers": {"type": "boolean", "default": false}
+                    "is_anonymous": {"type": "boolean", "default": True},
+                    "allows_multiple_answers": {"type": "boolean", "default": False}
                 },
                 "required": ["question", "options"]
             },
