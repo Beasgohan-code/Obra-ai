@@ -1,0 +1,114 @@
+import asyncio
+import logging
+import os
+
+from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
+import uvicorn
+
+from config.settings import settings
+from services.db import db
+from handlers.commands import router as commands_router
+from handlers.chat import router as chat_router
+from handlers.media import router as media_router
+from handlers.inline import router as inline_router
+from handlers.callbacks import router as callbacks_router
+from web.dashboard import app as fastapi_app
+from services.scheduler import start_scheduler
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("obra")
+
+os.makedirs("data", exist_ok=True)
+os.makedirs(settings.CHROMA_PATH, exist_ok=True)
+
+
+def build_dispatcher() -> Dispatcher:
+    dp = Dispatcher()
+    dp.include_router(commands_router)
+    dp.include_router(chat_router)
+    dp.include_router(media_router)
+    dp.include_router(inline_router)
+    dp.include_router(callbacks_router)
+    return dp
+
+
+async def run_polling(bot: Bot, dp: Dispatcher):
+    me = await bot.get_me()
+    logger.info(f"obra polling as @{me.username}")
+    await dp.start_polling(bot)
+
+
+async def run_webhook(bot: Bot, dp: Dispatcher):
+    await bot.set_webhook(
+        url=settings.WEBHOOK_URL.rstrip("/") + settings.WEBHOOK_PATH,
+        secret_token=settings.WEBHOOK_SECRET or None,
+        drop_pending_updates=True,
+    )
+    me = await bot.get_me()
+    logger.info(f"obra webhook as @{me.username} → {settings.WEBHOOK_URL}")
+
+    aio = web.Application()
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=settings.WEBHOOK_SECRET or None,
+    ).register(aio, path=settings.WEBHOOK_PATH)
+    setup_application(aio, dp, bot=bot)
+
+    runner = web.AppRunner(aio)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8081)
+    await site.start()
+    logger.info("Webhook server on :8081 (put reverse-proxy in front)")
+    await asyncio.Event().wait()
+
+
+async def run_dashboard():
+    config = uvicorn.Config(
+        fastapi_app,
+        host=settings.DASHBOARD_HOST,
+        port=settings.DASHBOARD_PORT,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+async def main():
+    await db.init()
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    dp = build_dispatcher()
+    start_scheduler(bot)
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Start"),
+            BotCommand(command="help", description="Help"),
+            BotCommand(command="clear", description="Clear chat memory"),
+            BotCommand(command="skill", description="Schedules / reminders"),
+            BotCommand(command="lang", description="Language"),
+            BotCommand(command="memory", description="Your memory"),
+        ])
+    except Exception:
+        pass
+    mode = (settings.MODE or "polling").lower()
+    logger.info(f"Starting obra mode={mode}")
+
+    if mode == "webhook" and settings.WEBHOOK_URL:
+        await asyncio.gather(run_webhook(bot, dp), run_dashboard())
+    else:
+        await asyncio.gather(run_polling(bot, dp), run_dashboard())
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Stopped.")

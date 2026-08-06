@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>obra dashboard</title>
+  <style>
+    body{font-family:system-ui;background:#0f1115;color:#e6e6e6;margin:0;padding:1.5rem}
+    .card{background:#1a1d24;padding:1.2rem;border-radius:12px;margin-bottom:1rem}
+    h1{margin-top:0}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem}
+    .stat{font-size:1.6rem;font-weight:700}
+    input,button{padding:.5rem;border-radius:8px;border:1px solid #333;background:#111;color:#fff;margin:.2rem}
+    button{background:#3b82f6;border:none;cursor:pointer}
+  </style>
+</head>
+<body>
+  <h1>obra admin</h1>
+  <div class="grid">
+    <div class="card"><div class="stat">{{ stats.active_users }}</div>Active users (24h)</div>
+    <div class="card"><div class="stat">{{ stats.chats }}</div>Chats</div>
+    <div class="card"><div class="stat">{{ stats.blocked }}</div>Blocked</div>
+    <div class="card"><div class="stat">{{ model }}</div>Model</div>
+  </div>
+  <div class="card">
+    <h3>Events (24h)</h3>
+    <ul>
+    {% for k,v in stats.events.items() %}
+      <li>{{ k }}: {{ v }}</li>
+    {% else %}
+      <li>No events yet</li>
+    {% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Block / Unblock</h3>
+    <form method="post" action="/api/block" style="display:inline">
+      <input name="user_id" placeholder="user_id" required/>
+      <input name="reason" placeholder="reason"/>
+      <button type="submit">Block</button>
+    </form>
+    <form method="post" action="/api/unblock" style="display:inline">
+      <input name="user_id" placeholder="user_id" required/>
+      <button type="submit">Unblock</button>
+    </form>
+  </div>
+</body>
+</html>
