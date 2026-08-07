@@ -120,3 +120,29 @@ async def cmd_unblock(message: Message):
     if len(parts)<2 or not parts[1].isdigit():
         await message.answer("Usage: /unblock user_id"); return
     await db.unblock_user(int(parts[1])); await message.answer("Unblocked.")
+
+
+@router.message(Command("secretary"))
+async def cmd_secretary(message: Message):
+    """Pause/resume secretary auto-replies for this owner."""
+    parts = (message.text or "").split(maxsplit=1)
+    arg = (parts[1].strip().lower() if len(parts) > 1 else "")
+    uid = message.from_user.id
+    us = await db.get_user_settings(uid)
+    if arg in ("off", "pause", "stop"):
+        await db.set_user_settings(uid, secretary_paused=True)
+        await message.answer("⏸️ Secretary auto-reply <b>paused</b>.\n<code>/secretary on</code> to resume.", parse_mode="HTML")
+        return
+    if arg in ("on", "resume", "start"):
+        await db.set_user_settings(uid, secretary_paused=False)
+        await message.answer("▶️ Secretary auto-reply <b>on</b>.", parse_mode="HTML")
+        return
+    paused = bool(us.get("secretary_paused"))
+    await message.answer(
+        f"🔐 <b>Secretary</b>\n"
+        f"Auto-reply: <b>{'PAUSED' if paused else 'ON'}</b>\n\n"
+        f"1) @BotFather → Secretary Mode ON\n"
+        f"2) Settings → Chat Automation → this bot\n"
+        f"3) <code>/secretary on|off</code>",
+        parse_mode="HTML",
+    )

@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idx_proj_user ON projects(user_id);
 
+CREATE TABLE IF NOT EXISTS business_connections (
+  connection_id TEXT PRIMARY KEY,
+  user_id INTEGER,
+  is_enabled INTEGER DEFAULT 1,
+  can_reply INTEGER DEFAULT 1,
+  raw TEXT DEFAULT '{}',
+  updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS pending_actions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -370,6 +378,38 @@ class Database:
                 d["payload"] = json.loads(d["payload"])
                 return d
             return None
+
+
+    async def save_business_connection(self, connection_id: str, user_id: int, is_enabled: bool = True, can_reply: bool = True, raw: dict = None):
+        import json
+        from datetime import datetime
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT INTO business_connections (connection_id, user_id, is_enabled, can_reply, raw, updated_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(connection_id) DO UPDATE SET
+                     user_id=excluded.user_id, is_enabled=excluded.is_enabled,
+                     can_reply=excluded.can_reply, raw=excluded.raw, updated_at=excluded.updated_at""",
+                (connection_id, user_id, 1 if is_enabled else 0, 1 if can_reply else 0,
+                 json.dumps(raw or {}), datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+
+    async def get_business_connection(self, connection_id: str):
+        import json
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT * FROM business_connections WHERE connection_id=?", (connection_id,))
+            row = await cur.fetchone()
+            if not row:
+                return None
+            return {
+                "connection_id": row["connection_id"],
+                "user_id": row["user_id"],
+                "is_enabled": bool(row["is_enabled"]),
+                "can_reply": bool(row["can_reply"]),
+                "raw": json.loads(row["raw"] or "{}"),
+            }
 
 
 db = Database()

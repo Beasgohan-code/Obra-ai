@@ -17,6 +17,7 @@ from handlers.chat import router as chat_router
 from handlers.media import router as media_router
 from handlers.inline import router as inline_router
 from handlers.callbacks import router as callbacks_router
+from handlers.secretary import router as secretary_router
 from web.dashboard import app as fastapi_app
 from services.scheduler import start_scheduler, reload_skills_now
 
@@ -34,13 +35,21 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(media_router)
     dp.include_router(inline_router)
     dp.include_router(callbacks_router)
+    dp.include_router(secretary_router)
     return dp
 
 
 async def run_polling(bot: Bot, dp: Dispatcher):
     me = await bot.get_me()
     logger.info(f"obra polling as @{me.username}")
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot,
+        allowed_updates=[
+            "message", "callback_query", "inline_query",
+            "business_connection", "business_message",
+            "edited_business_message", "deleted_business_messages",
+        ],
+    )
 
 
 async def run_webhook(bot: Bot, dp: Dispatcher):
@@ -108,7 +117,7 @@ async def main():
     try:
         from services.tools import TOOLS
         from services.scheduler import start_scheduler as _ss
-        logger.info("self_check tools=%s rich=%s scheduler=%s",
+        logger.info("self_check tools=%s rich=%s scheduler=%s secretary=on",
                     len(TOOLS),
                     getattr(settings, "USE_RICH_MESSAGES", True),
                     getattr(settings, "ENABLE_SCHEDULER", True))
