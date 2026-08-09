@@ -78,14 +78,38 @@ async def run_webhook(bot: Bot, dp: Dispatcher):
 
 
 async def run_dashboard():
+    # Render injects PORT — must bind to it for Web Service health checks
+    port = int(os.environ.get("PORT") or settings.DASHBOARD_PORT or 8080)
+    host = settings.DASHBOARD_HOST or "0.0.0.0"
+    logger.info("Dashboard/uptime listening on %s:%s", host, port)
     config = uvicorn.Config(
         fastapi_app,
-        host=settings.DASHBOARD_HOST,
-        port=settings.DASHBOARD_PORT,
+        host=host,
+        port=port,
         log_level="info",
     )
     server = uvicorn.Server(config)
     await server.serve()
+
+
+async def self_ping_loop():
+    """Optional: ping our own /health so Render free tier stays awake."""
+    url = (os.environ.get("RENDER_EXTERNAL_URL") or getattr(settings, "PUBLIC_URL", "") or "").rstrip("/")
+    if not url:
+        logger.info("self_ping disabled (set RENDER_EXTERNAL_URL or PUBLIC_URL)")
+        return
+    import aiohttp
+    endpoint = url + "/health"
+    logger.info("self_ping enabled → %s every 4 min", endpoint)
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    logger.debug("self_ping %s", resp.status)
+        except Exception as e:
+            logger.debug("self_ping fail: %s", e)
+        await asyncio.sleep(240)  # 4 minutes
 
 
 async def main():
@@ -125,9 +149,9 @@ async def main():
         logger.warning("self_check: %s", e)
 
     if mode == "webhook" and settings.WEBHOOK_URL:
-        await asyncio.gather(run_webhook(bot, dp), run_dashboard())
+        await asyncio.gather(run_webhook(bot, dp), run_dashboard(), self_ping_loop())
     else:
-        await asyncio.gather(run_polling(bot, dp), run_dashboard())
+        await asyncio.gather(run_polling(bot, dp), run_dashboard(), self_ping_loop())
 
 
 if __name__ == "__main__":

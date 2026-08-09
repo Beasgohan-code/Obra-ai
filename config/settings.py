@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     DASHBOARD_SECRET: str = "change-me"
     DASHBOARD_HOST: str = "0.0.0.0"
     DASHBOARD_PORT: int = 8080
+    PUBLIC_URL: str = ""  # e.g. https://obra.onrender.com for self-ping
 
     MODE: str = "polling"
     WEBHOOK_URL: str = ""
