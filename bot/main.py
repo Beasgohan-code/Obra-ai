@@ -135,7 +135,10 @@ async def main():
     logger.info(f"Starting obra mode={mode}")
     try:
         from services.tools import TOOLS
-        logger.info("self_check tools=%s rich=%s", len(TOOLS), getattr(settings, "USE_RICH_MESSAGES", True))
+        chain = settings.provider_chain()
+        logger.info("self_check tools=%s rich=%s providers=%s",
+                    len(TOOLS), getattr(settings, "USE_RICH_MESSAGES", True),
+                    [p["name"] for p in chain] or ["NONE — add GROQ_API_KEY!"])
     except Exception as e:
         logger.warning("self_check: %s", e)
 

@@ -165,6 +165,10 @@ class ProviderPool:
         user_provider: dict = None,
     ) -> Dict[str, Any]:
         chain = settings.provider_chain()
+        if not chain:
+            logger.error("provider_chain EMPTY — set GROQ_API_KEY or OPENAI_API_KEY")
+        else:
+            logger.info("LLM chain: %s", [p["name"] for p in chain])
         if user_provider and user_provider.get("api_key"):
             chain = [{
                 "name": "user_byok",
@@ -219,11 +223,11 @@ class ProviderPool:
                         response = await client.chat.completions.create(**kwargs)
                     except Exception as e2:
                         last_err = e2
-                        logger.warning("Provider %s failed: %s", prov["name"], e2)
+                        logger.warning("Provider %s failed (will try next): %s", prov["name"], e2)
                         continue
                 else:
                     last_err = e1
-                    logger.warning("Provider %s failed: %s", prov["name"], e1)
+                    logger.warning("Provider %s failed (will try next): %s", prov["name"], e1)
                     continue
 
             message = response.choices[0].message

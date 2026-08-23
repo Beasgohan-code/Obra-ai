@@ -153,9 +153,8 @@ class Settings(BaseSettings):
 
     def provider_chain(self) -> List[Dict[str, Any]]:
         """
-        Ordered LLM fallbacks — OpenAI-compatible providers from
-        https://github.com/open-free-llm-api/awesome-freellm-apis
-        Only entries with a non-empty API key are used.
+        Ordered LLM fallbacks. Prefer reliable free tiers first.
+        Groq → OpenAI/OpenRouter → others → Gemini last (strict quotas).
         """
         chain: List[Dict[str, Any]] = []
 
@@ -164,62 +163,71 @@ class Settings(BaseSettings):
                 return
             chain.append({
                 "name": name,
-                "base_url": base_url.rstrip("/"),
+                "base_url": (base_url or "").rstrip("/"),
                 "api_key": api_key.strip(),
                 "model": model or self.MODEL,
             })
 
-        primary_key = self.OPENAI_API_KEY or self.OPENROUTER_API_KEY
-        if primary_key:
-            add("primary", self.OPENAI_BASE_URL, primary_key, self.MODEL)
-
-        # Fast permanent free tiers (no card for most)
+        # 1) Groq — best free + tools
         add("groq", "https://api.groq.com/openai/v1", self.GROQ_API_KEY, self.GROQ_MODEL)
+
+        # 2) Official OpenAI (only if key looks like sk- and base is openai OR explicit)
+        openai_key = self.OPENAI_API_KEY or ""
+        base = (self.OPENAI_BASE_URL or "").rstrip("/")
+        is_openrouter_key = openai_key.startswith("sk-or-")
+        is_openai_key = openai_key.startswith("sk-") and not is_openrouter_key
+        if is_openai_key and ("api.openai.com" in base or not base or base == "https://api.openai.com/v1"):
+            add("openai", "https://api.openai.com/v1", openai_key, self.MODEL if not self.MODEL.startswith("google/") else "gpt-4o-mini")
+        elif openai_key and not is_openrouter_key and "openai.com" in base:
+            add("openai", base or "https://api.openai.com/v1", openai_key, self.MODEL)
+
+        # 3) OpenRouter
+        or_key = self.OPENROUTER_API_KEY or (openai_key if is_openrouter_key else "")
+        if or_key:
+            add("openrouter", "https://openrouter.ai/api/v1", or_key,
+                self.MODEL if "openrouter" in base or is_openrouter_key else "google/gemini-2.5-flash:free")
+
+        # 4) Primary custom (if different from above)
+        primary_key = self.OPENAI_API_KEY or self.OPENROUTER_API_KEY
+        if primary_key and base and "openai.com" not in base and "openrouter.ai" not in base and "groq.com" not in base:
+            # e.g. user pointed OPENAI_* at another proxy
+            if "generativelanguage.googleapis.com" not in base:
+                add("primary", base, primary_key, self.MODEL)
+
+        # 5) Other free tiers
         add("cerebras", "https://api.cerebras.ai/v1", self.CEREBRAS_API_KEY, self.CEREBRAS_MODEL)
         add("mistral", "https://api.mistral.ai/v1", self.MISTRAL_API_KEY, self.MISTRAL_MODEL)
         add("nvidia", "https://integrate.api.nvidia.com/v1", self.NVIDIA_API_KEY, self.NVIDIA_MODEL)
         add("sambanova", "https://api.sambanova.ai/v1", self.SAMBANOVA_API_KEY, self.SAMBANOVA_MODEL)
         add("llm7", "https://api.llm7.io/v1", self.LLM7_API_KEY, self.LLM7_MODEL)
-        add(
-            "github_models",
-            "https://models.github.ai/inference",
-            self.GITHUB_MODELS_TOKEN or self.GITHUB_TOKEN,
-            self.GITHUB_MODELS_MODEL,
-        )
+        add("github_models", "https://models.github.ai/inference",
+            self.GITHUB_MODELS_TOKEN or self.GITHUB_TOKEN, self.GITHUB_MODELS_MODEL)
         add("huggingface", "https://router.huggingface.co/v1", self.HF_TOKEN, self.HF_MODEL)
-        add("gemini_openai", "https://generativelanguage.googleapis.com/v1beta/openai/", self.GEMINI_API_KEY, self.GEMINI_MODEL)
-        add("zhipu", "https://open.bigmodel.cn/api/paas/v4", self.ZHIPU_API_KEY, self.ZHIPU_MODEL)
-
-        # Registration free / cheap
-        add("openrouter", "https://openrouter.ai/api/v1", self.OPENROUTER_API_KEY, "google/gemini-2.5-flash:free")
         add("deepseek", "https://api.deepseek.com/v1", self.DEEPSEEK_API_KEY, self.DEEPSEEK_MODEL)
-        add("together", "https://api.together.xyz/v1", self.TOGETHER_API_KEY, "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
+        add("together", "https://api.together.xyz/v1", self.TOGETHER_API_KEY,
+            "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
         add("xai", "https://api.x.ai/v1", self.XAI_API_KEY, self.XAI_MODEL)
         add("siliconflow", "https://api.siliconflow.cn/v1", self.SILICONFLOW_API_KEY, self.SILICONFLOW_MODEL)
         add("ollama_cloud", "https://api.ollama.com/v1", self.OLLAMA_API_KEY, self.OLLAMA_MODEL)
+        add("zhipu", "https://open.bigmodel.cn/api/paas/v4", self.ZHIPU_API_KEY, self.ZHIPU_MODEL)
         add("modelscope", "https://api-inference.modelscope.cn/v1", self.MODELSCOPE_API_KEY, self.MODELSCOPE_MODEL)
         add("alibaba", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", self.ALIBABA_API_KEY, self.ALIBABA_MODEL)
-        add("ovh", "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", self.OVH_API_KEY, self.OVH_MODEL)
         add("chutes", "https://api.chutes.ai/v1", self.CHUTES_API_KEY, self.CHUTES_MODEL)
         add("glhf", "https://glhf.chat/api/openai/v1", self.GLHF_API_KEY, self.GLHF_MODEL)
         add("nebius", "https://api.studio.nebius.com/v1", self.NEBIUS_API_KEY, self.NEBIUS_MODEL)
-        add("nscale", "https://inference.api.nscale.com/v1", self.NSCALE_API_KEY, self.NSCALE_MODEL)
-        add("agnes", "https://apihub.agnes-ai.com/v1", self.AGNES_API_KEY, self.AGNES_MODEL)
-        add("aion", "https://api.aionlabs.ai/v1", self.AION_API_KEY, self.AION_MODEL)
-        add("ai21", "https://api.ai21.com/studio/v1", self.AI21_API_KEY, self.AI21_MODEL)
 
-        # User-defined extras
+        # 6) Gemini LAST — strict quotas / thought_signature issues
+        add("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/",
+            self.GEMINI_API_KEY, self.GEMINI_MODEL)
+
+        # Custom extras
         try:
             extra = json.loads(self.FREE_FALLBACKS or "[]")
             if isinstance(extra, list):
                 for item in extra:
                     if item.get("api_key") and item.get("base_url"):
-                        add(
-                            item.get("name", "custom"),
-                            item["base_url"],
-                            item["api_key"],
-                            item.get("model") or self.MODEL,
-                        )
+                        add(item.get("name", "custom"), item["base_url"], item["api_key"],
+                            item.get("model") or self.MODEL)
         except Exception:
             pass
 
@@ -231,6 +239,7 @@ class Settings(BaseSettings):
                 seen.add(key)
                 unique.append(p)
         return unique
+
 
 
 settings = Settings()
