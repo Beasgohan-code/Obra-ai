@@ -1,8 +1,4 @@
-"""
-Telegram Secretary Mode (Business Connection) — full handler.
-BotFather → Mode Settings → Secretary Mode ON
-User → Settings → Chat Automation → this bot
-"""
+"""Telegram Secretary Mode — reply on behalf of the user in allowed chats."""
 from __future__ import annotations
 
 import logging
@@ -14,32 +10,29 @@ from aiogram.types import Message, BusinessConnection
 from config.settings import settings
 from services.db import db
 from services.llm import chat_completion, detect_agent, AGENTS
-from services.telegram_send import _api
+from services.persona import polish_system
 
 logger = logging.getLogger("obra.secretary")
 router = Router(name="secretary")
 
-SECRETARY_SYSTEM = """You are obra acting as a personal secretary for the account owner.
-Reply in the owner's voice: short, natural, helpful — not robotic.
-Do not reveal you are a bot unless asked.
-If the topic is sensitive (money, passwords, legal, private secrets), say the owner will reply soon.
-Keep answers concise unless detail is needed.
-"""
+
+async def _api(bot: Bot, method: str, payload: dict):
+    token = bot.token
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            data = await resp.json()
+            if not data.get("ok"):
+                raise RuntimeError(data.get("description") or data)
+            return data.get("result") or data
 
 
-async def _biz_send(
-    bot: Bot,
-    *,
-    business_connection_id: str,
-    chat_id: int,
-    text: str,
-    reply_to: Optional[int] = None,
-) -> bool:
-    text = (text or "")[:4000]
+async def _biz_send(bot, business_connection_id: str, chat_id: int, text: str, reply_to: Optional[int] = None) -> bool:
     payload = {
         "business_connection_id": business_connection_id,
         "chat_id": chat_id,
-        "text": text,
+        "text": (text or "")[:4000],
     }
     if reply_to:
         payload["reply_parameters"] = {"message_id": reply_to}
@@ -57,33 +50,13 @@ async def _biz_send(
             return False
 
 
-async def _biz_typing(bot: Bot, business_connection_id: str, chat_id: int):
+async def _biz_typing(bot, business_connection_id: str, chat_id: int):
     try:
-        await _api(
-            bot,
-            "sendChatAction",
-            {
-                "business_connection_id": business_connection_id,
-                "chat_id": chat_id,
-                "action": "typing",
-            },
-        )
-    except Exception:
-        pass
-
-
-async def _biz_react(bot: Bot, business_connection_id: str, chat_id: int, message_id: int, emoji: str = "👀"):
-    try:
-        await _api(
-            bot,
-            "setMessageReaction",
-            {
-                "business_connection_id": business_connection_id,
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "reaction": [{"type": "emoji", "emoji": emoji}],
-            },
-        )
+        await _api(bot, "sendChatAction", {
+            "business_connection_id": business_connection_id,
+            "chat_id": chat_id,
+            "action": "typing",
+        })
     except Exception:
         pass
 
@@ -97,27 +70,17 @@ async def on_business_connection(event: BusinessConnection, bot: Bot):
     rights = getattr(event, "rights", None)
     if rights is not None:
         can_reply = bool(getattr(rights, "can_reply", True))
-
-    await db.save_business_connection(
-        connection_id=cid,
-        user_id=uid,
-        is_enabled=is_enabled,
-        can_reply=can_reply,
-        raw={"user_chat_id": getattr(event, "user_chat_id", None)},
-    )
-    logger.info("Secretary %s user=%s conn=%s reply=%s", "ON" if is_enabled else "OFF", uid, cid, can_reply)
-
+    try:
+        await db.save_business_connection(cid, uid, is_enabled, can_reply, {})
+    except Exception as e:
+        logger.warning("save biz conn: %s", e)
     try:
         if is_enabled:
             await bot.send_message(
                 uid,
                 "✅ <b>Secretary Mode connected</b>\n\n"
-                "I'll help reply in chats you allowed.\n\n"
-                "• Auto-reply is <b>ON</b>\n"
-                "• Pause anytime: <code>/secretary off</code>\n"
-                "• Resume: <code>/secretary on</code>\n"
-                "• Status: <code>/secretary</code>\n\n"
-                "Manage chats in Settings → Chat Automation.",
+                "Auto-reply is ON.\n"
+                "<code>/secretary off</code> to pause · <code>/secretary on</code> to resume",
                 parse_mode="HTML",
             )
         else:
@@ -126,91 +89,69 @@ async def on_business_connection(event: BusinessConnection, bot: Bot):
         pass
 
 
-async def _handle_biz_text(message: Message, bot: Bot, *, is_edit: bool = False):
+async def _handle(message: Message, bot: Bot, is_edit: bool = False):
     if not message or not message.from_user or message.from_user.is_bot:
         return
-
     text = (message.text or message.caption or "").strip()
     if not text:
         return
-
     bc_id = getattr(message, "business_connection_id", None)
     if not bc_id:
         return
-
-    conn = await db.get_business_connection(bc_id)
+    conn = None
+    try:
+        conn = await db.get_business_connection(bc_id)
+    except Exception:
+        pass
     if conn and not conn.get("is_enabled"):
         return
     if conn and conn.get("can_reply") is False:
         return
-
     owner_id = (conn or {}).get("user_id") or 0
-
-    # Owner can pause auto-reply via user_settings
     if owner_id:
-        us = await db.get_user_settings(owner_id)
-        if us.get("secretary_paused"):
-            logger.info("secretary paused for owner %s", owner_id)
-            return
-        ok, _ = await db.check_rate_limit(owner_id)
-        if not ok:
-            return
-
+        try:
+            if await db.is_secretary_paused(owner_id):
+                return
+        except Exception:
+            pass
     chat_id = message.chat.id
     await _biz_typing(bot, bc_id, chat_id)
-    if getattr(settings, "AUTO_REACT", True):
-        await _biz_react(bot, bc_id, chat_id, message.message_id, "👀")
-
-    agent = detect_agent(text)
-    system = SECRETARY_SYSTEM
+    system = polish_system(AGENTS.get("default", ""), mode="secretary")
     if owner_id:
-        mem = await db.get_user_memory(owner_id)
-        if mem:
-            system += f"\n\nOwner notes: {mem.get('notes') or ''}\nPrefs: {mem.get('preferences') or {}}"
-
+        try:
+            mem = await db.get_user_memory(owner_id)
+            if mem:
+                system += f"\nOwner notes: {mem.get('notes') or ''}"
+        except Exception:
+            pass
     history = [{"role": "user", "content": text}]
     try:
-        prev = await db.get_history(chat_id, limit=8)
+        prev = await db.get_history(chat_id, limit=6)
         if prev:
-            history = prev[-8:] + ([{"role": "user", "content": f"[edited] {text}"}] if is_edit else history)
+            history = prev[-6:] + history
     except Exception:
         pass
-
     try:
         result = await chat_completion(
-            messages=history,
-            system=system,
-            tools=None,
-            temperature=0.55,
-            max_tokens=min(1500, getattr(settings, "MAX_TOKENS_MEDIUM", 4096) or 4096),
+            messages=history, system=system, tools=None,
+            temperature=0.55, max_tokens=1200,
         )
         reply = (result.get("content") or "").strip() or "Got it — the owner will follow up soon."
     except Exception as e:
         logger.warning("secretary LLM: %s", e)
         reply = "Thanks — the owner will reply soon."
-
-    ok = await _biz_send(
-        bot,
-        business_connection_id=bc_id,
-        chat_id=chat_id,
-        text=reply,
-        reply_to=None if is_edit else message.message_id,
-    )
+    ok = await _biz_send(bot, bc_id, chat_id, reply, None if is_edit else message.message_id)
     if ok:
         try:
             await db.add_message(chat_id, "user", text)
             await db.add_message(chat_id, "assistant", reply)
-            if owner_id:
-                await db.log_event(owner_id, chat_id, "secretary_reply", {"edit": is_edit})
         except Exception:
             pass
     elif owner_id:
         try:
             await bot.send_message(
                 owner_id,
-                f"⚠️ Secretary couldn't send a reply (chat maybe inactive >24h).\n"
-                f"From chat <code>{chat_id}</code>:\n{text[:300]}",
-                parse_mode="HTML",
+                f"⚠️ Secretary couldn't reply (maybe chat inactive >24h).\n{text[:250]}",
             )
         except Exception:
             pass
@@ -218,12 +159,12 @@ async def _handle_biz_text(message: Message, bot: Bot, *, is_edit: bool = False)
 
 @router.business_message()
 async def on_business_message(message: Message, bot: Bot):
-    await _handle_biz_text(message, bot, is_edit=False)
+    await _handle(message, bot, False)
 
 
 @router.edited_business_message()
 async def on_edited_business_message(message: Message, bot: Bot):
-    await _handle_biz_text(message, bot, is_edit=True)
+    await _handle(message, bot, True)
 
 
 @router.message(F.text.regexp(r"(?i)^/start\s+bizChat"))
@@ -232,9 +173,7 @@ async def on_start_biz(message: Message, bot: Bot):
     args = parts[1].strip() if len(parts) > 1 else ""
     chat_ref = args[7:] if args.lower().startswith("bizchat") else args
     await message.answer(
-        f"🔐 <b>Secretary</b> — chat <code>{chat_ref}</code>\n\n"
-        f"<code>/secretary</code> status · "
-        f"<code>/secretary off</code> pause · "
-        f"<code>/secretary on</code> resume",
+        f"🔐 <b>Secretary</b> — chat <code>{chat_ref}</code>\n"
+        f"<code>/secretary</code> · on · off",
         parse_mode="HTML",
     )

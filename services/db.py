@@ -84,13 +84,17 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idx_proj_user ON projects(user_id);
 
-CREATE TABLE IF NOT EXISTS business_connections (
-  connection_id TEXT PRIMARY KEY,
-  user_id INTEGER,
-  is_enabled INTEGER DEFAULT 1,
-  can_reply INTEGER DEFAULT 1,
-  raw TEXT DEFAULT '{}',
-  updated_at TEXT
+CREATE TABLE IF NOT EXISTS user_premium (
+    user_id INTEGER PRIMARY KEY,
+    until_ts TEXT NOT NULL,
+    stars_paid INTEGER DEFAULT 0,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS monthly_usage (
+    user_id INTEGER NOT NULL,
+    month TEXT NOT NULL,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, month)
 );
 CREATE TABLE IF NOT EXISTS pending_actions (
     id TEXT PRIMARY KEY,
@@ -150,15 +154,6 @@ class Database:
                 (user_id, name, json.dumps(prefs or {}), notes or "", datetime.utcnow().isoformat()),
             )
             await db.commit()
-
-    async def set_memory_kv(self, user_id: int, key: str, value: str):
-        mem = await self.get_user_memory(user_id) or {}
-        prefs = mem.get("preferences") or {}
-        if not isinstance(prefs, dict):
-            prefs = {}
-        prefs[str(key)] = str(value)
-        await self.set_user_memory(user_id, preferences=prefs)
-        return True
 
     async def get_user_memory(self, user_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:
@@ -379,11 +374,18 @@ class Database:
                 return d
             return None
 
-
     async def save_business_connection(self, connection_id: str, user_id: int, is_enabled: bool = True, can_reply: bool = True, raw: dict = None):
-        import json
-        from datetime import datetime
         async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """CREATE TABLE IF NOT EXISTS business_connections (
+                    connection_id TEXT PRIMARY KEY,
+                    user_id INTEGER,
+                    is_enabled INTEGER DEFAULT 1,
+                    can_reply INTEGER DEFAULT 1,
+                    raw TEXT DEFAULT '{}',
+                    updated_at TEXT
+                )"""
+            )
             await db.execute(
                 """INSERT INTO business_connections (connection_id, user_id, is_enabled, can_reply, raw, updated_at)
                    VALUES (?,?,?,?,?,?)
@@ -396,8 +398,17 @@ class Database:
             await db.commit()
 
     async def get_business_connection(self, connection_id: str):
-        import json
         async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """CREATE TABLE IF NOT EXISTS business_connections (
+                    connection_id TEXT PRIMARY KEY,
+                    user_id INTEGER,
+                    is_enabled INTEGER DEFAULT 1,
+                    can_reply INTEGER DEFAULT 1,
+                    raw TEXT DEFAULT '{}',
+                    updated_at TEXT
+                )"""
+            )
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM business_connections WHERE connection_id=?", (connection_id,))
             row = await cur.fetchone()
@@ -410,6 +421,108 @@ class Database:
                 "can_reply": bool(row["can_reply"]),
                 "raw": json.loads(row["raw"] or "{}"),
             }
+
+    async def set_secretary_paused(self, user_id: int, paused: bool):
+        mem = await self.get_user_memory(user_id) or {}
+        prefs = mem.get("preferences") or {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+        prefs["secretary_paused"] = bool(paused)
+        await self.set_user_memory(user_id, preferences=prefs)
+
+    async def is_secretary_paused(self, user_id: int) -> bool:
+        mem = await self.get_user_memory(user_id) or {}
+        prefs = mem.get("preferences") or {}
+        return bool(isinstance(prefs, dict) and prefs.get("secretary_paused"))
+
+
+    async def is_premium(self, user_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""CREATE TABLE IF NOT EXISTS user_premium (
+                user_id INTEGER PRIMARY KEY, until_ts TEXT NOT NULL,
+                stars_paid INTEGER DEFAULT 0, updated_at TEXT)""")
+            cur = await db.execute("SELECT until_ts FROM user_premium WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+            if not row:
+                return False
+            try:
+                return datetime.fromisoformat(row[0]) > datetime.utcnow()
+            except Exception:
+                return False
+
+    async def grant_premium(self, user_id: int, days: int = 30, stars: int = 0):
+        until = (datetime.utcnow() + timedelta(days=days)).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""CREATE TABLE IF NOT EXISTS user_premium (
+                user_id INTEGER PRIMARY KEY, until_ts TEXT NOT NULL,
+                stars_paid INTEGER DEFAULT 0, updated_at TEXT)""")
+            await db.execute(
+                """INSERT INTO user_premium (user_id, until_ts, stars_paid, updated_at) VALUES (?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET until_ts=excluded.until_ts,
+                   stars_paid=user_premium.stars_paid+excluded.stars_paid, updated_at=excluded.updated_at""",
+                (user_id, until, stars, datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+        return until
+
+    async def usage_today(self, user_id: int):
+        day = datetime.utcnow().strftime("%Y-%m-%d")
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT count FROM daily_usage WHERE user_id=? AND day=?", (user_id, day))
+            row = await cur.fetchone()
+            used = int(row[0]) if row else 0
+        prem = await self.is_premium(user_id)
+        lim = settings.DAILY_QUOTA_PREMIUM if prem else settings.DAILY_QUOTA
+        return used, lim
+
+    async def usage_month(self, user_id: int):
+        month = datetime.utcnow().strftime("%Y-%m")
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""CREATE TABLE IF NOT EXISTS monthly_usage (
+                user_id INTEGER NOT NULL, month TEXT NOT NULL, count INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, month))""")
+            cur = await db.execute("SELECT count FROM monthly_usage WHERE user_id=? AND month=?", (user_id, month))
+            row = await cur.fetchone()
+            used = int(row[0]) if row else 0
+        prem = await self.is_premium(user_id)
+        lim = settings.MONTHLY_QUOTA_PREMIUM if prem else settings.MONTHLY_QUOTA
+        return used, lim
+
+    async def check_quotas(self, user_id: int) -> tuple:
+        """Returns (ok, reason). Increments counters if ok."""
+        if user_id in settings.admin_list:
+            return True, ""
+        prem = await self.is_premium(user_id)
+        day = datetime.utcnow().strftime("%Y-%m-%d")
+        month = datetime.utcnow().strftime("%Y-%m")
+        dlim = settings.DAILY_QUOTA_PREMIUM if prem else settings.DAILY_QUOTA
+        mlim = settings.MONTHLY_QUOTA_PREMIUM if prem else settings.MONTHLY_QUOTA
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""CREATE TABLE IF NOT EXISTS monthly_usage (
+                user_id INTEGER NOT NULL, month TEXT NOT NULL, count INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, month))""")
+            cur = await db.execute("SELECT count FROM daily_usage WHERE user_id=? AND day=?", (user_id, day))
+            row = await cur.fetchone()
+            dused = int(row[0]) if row else 0
+            if dused >= dlim:
+                return False, f"Daily limit reached ({dused}/{dlim}). Say upgrade for Premium."
+            cur = await db.execute("SELECT count FROM monthly_usage WHERE user_id=? AND month=?", (user_id, month))
+            row = await cur.fetchone()
+            mused = int(row[0]) if row else 0
+            if mused >= mlim:
+                return False, f"Monthly limit reached ({mused}/{mlim}). Say upgrade for Premium."
+            await db.execute(
+                """INSERT INTO daily_usage (user_id, day, count) VALUES (?,?,1)
+                   ON CONFLICT(user_id, day) DO UPDATE SET count=count+1""",
+                (user_id, day),
+            )
+            await db.execute(
+                """INSERT INTO monthly_usage (user_id, month, count) VALUES (?,?,1)
+                   ON CONFLICT(user_id, month) DO UPDATE SET count=count+1""",
+                (user_id, month),
+            )
+            await db.commit()
+        return True, ""
 
 
 db = Database()

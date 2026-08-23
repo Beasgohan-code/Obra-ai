@@ -17,13 +17,61 @@ class Settings(BaseSettings):
     MODEL_RESEARCHER: str = ""
     MODEL_WRITER: str = ""
 
-    # JSON list of extra providers
+    # JSON list of extra providers (any OpenAI-compatible endpoint)
     FREE_FALLBACKS: str = "[]"
 
+    # --- Free / fallback keys (awesome-freellm-apis) ---
     GROQ_API_KEY: str = ""
     TOGETHER_API_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
+    NVIDIA_API_KEY: str = ""
+    CEREBRAS_API_KEY: str = ""
+    MISTRAL_API_KEY: str = ""
+    SAMBANOVA_API_KEY: str = ""
+    GITHUB_MODELS_TOKEN: str = ""  # or reuse GITHUB_TOKEN
+    LLM7_API_KEY: str = ""
+    HF_TOKEN: str = ""
+    SILICONFLOW_API_KEY: str = ""
+    XAI_API_KEY: str = ""
+    ZHIPU_API_KEY: str = ""
+    OLLAMA_API_KEY: str = ""
+    CHUTES_API_KEY: str = ""
+    GLHF_API_KEY: str = ""
+    AI21_API_KEY: str = ""
+    NEBIUS_API_KEY: str = ""
+    NSCALE_API_KEY: str = ""
+    AGNES_API_KEY: str = ""
+    AION_API_KEY: str = ""
+    MODELSCOPE_API_KEY: str = ""
+    OVH_API_KEY: str = ""
+    ALIBABA_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    # Optional model overrides per provider
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    NVIDIA_MODEL: str = "meta/llama-3.3-70b-instruct"
+    CEREBRAS_MODEL: str = "llama-3.3-70b"
+    MISTRAL_MODEL: str = "mistral-small-latest"
+    SAMBANOVA_MODEL: str = "Meta-Llama-3.3-70B-Instruct"
+    GITHUB_MODELS_MODEL: str = "openai/gpt-4o-mini"
+    LLM7_MODEL: str = "gpt-4o-mini"
+    HF_MODEL: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    SILICONFLOW_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    XAI_MODEL: str = "grok-2-latest"
+    ZHIPU_MODEL: str = "glm-4-flash"
+    OLLAMA_MODEL: str = "llama3.2"
+    CHUTES_MODEL: str = "deepseek-ai/DeepSeek-V3"
+    GLHF_MODEL: str = "hf:meta-llama/Meta-Llama-3.1-70B-Instruct"
+    DEEPSEEK_MODEL: str = "deepseek-chat"
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    MODELSCOPE_MODEL: str = "Qwen/Qwen2.5-72B-Instruct"
+    ALIBABA_MODEL: str = "qwen-turbo"
+    OVH_MODEL: str = "Meta-Llama-3_3-70B-Instruct"
+    NEBIUS_MODEL: str = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+    NSCALE_MODEL: str = "meta-llama/Llama-3.3-70B-Instruct"
+    AGNES_MODEL: str = "agnes-default"
+    AION_MODEL: str = "aion-1.0"
+    AI21_MODEL: str = "jamba-mini"
 
     MAX_HISTORY_TURNS: int = 20
     ADMIN_IDS: str = ""
@@ -33,7 +81,15 @@ class Settings(BaseSettings):
 
     RATE_LIMIT_MESSAGES: int = 30
     RATE_LIMIT_WINDOW_SECONDS: int = 60
-    DAILY_QUOTA: int = 200
+    DAILY_QUOTA: int = 50
+    DAILY_QUOTA_PREMIUM: int = 500
+    MONTHLY_QUOTA: int = 500
+    MONTHLY_QUOTA_PREMIUM: int = 10000
+    PREMIUM_STARS_PRICE: int = 50
+    PREMIUM_DAYS: int = 30
+    PREMIUM_TITLE: str = "Obra Premium"
+    PREMIUM_DESC: str = "Higher limits, priority, full coding power for 30 days"
+    MAX_TOKENS_CODE: int = 32000
     MAX_TOKENS_SMALL: int = 2048
     MAX_TOKENS_MEDIUM: int = 6144
     MAX_TOKENS_BIG: int = 16384
@@ -66,7 +122,6 @@ class Settings(BaseSettings):
     DASHBOARD_SECRET: str = "change-me"
     DASHBOARD_HOST: str = "0.0.0.0"
     DASHBOARD_PORT: int = 8080
-    PUBLIC_URL: str = ""  # e.g. https://obra.onrender.com for self-ping
 
     MODE: str = "polling"
     WEBHOOK_URL: str = ""
@@ -97,60 +152,81 @@ class Settings(BaseSettings):
         return m or self.MODEL
 
     def provider_chain(self) -> List[Dict[str, Any]]:
+        """
+        Ordered LLM fallbacks — OpenAI-compatible providers from
+        https://github.com/open-free-llm-api/awesome-freellm-apis
+        Only entries with a non-empty API key are used.
+        """
         chain: List[Dict[str, Any]] = []
+
+        def add(name: str, base_url: str, api_key: str, model: str):
+            if not (api_key or "").strip():
+                return
+            chain.append({
+                "name": name,
+                "base_url": base_url.rstrip("/"),
+                "api_key": api_key.strip(),
+                "model": model or self.MODEL,
+            })
+
         primary_key = self.OPENAI_API_KEY or self.OPENROUTER_API_KEY
         if primary_key:
-            chain.append({
-                "name": "primary",
-                "base_url": self.OPENAI_BASE_URL,
-                "api_key": primary_key,
-                "model": self.MODEL,
-            })
-        if self.GROQ_API_KEY:
-            chain.append({
-                "name": "groq",
-                "base_url": "https://api.groq.com/openai/v1",
-                "api_key": self.GROQ_API_KEY,
-                "model": "llama-3.3-70b-versatile",
-            })
-        if self.DEEPSEEK_API_KEY:
-            chain.append({
-                "name": "deepseek",
-                "base_url": "https://api.deepseek.com/v1",
-                "api_key": self.DEEPSEEK_API_KEY,
-                "model": "deepseek-chat",
-            })
-        if self.TOGETHER_API_KEY:
-            chain.append({
-                "name": "together",
-                "base_url": "https://api.together.xyz/v1",
-                "api_key": self.TOGETHER_API_KEY,
-                "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-            })
-        if self.OPENROUTER_API_KEY and self.OPENROUTER_API_KEY != primary_key:
-            chain.append({
-                "name": "openrouter_free",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": self.OPENROUTER_API_KEY,
-                "model": "google/gemini-2.0-flash-exp:free",
-            })
+            add("primary", self.OPENAI_BASE_URL, primary_key, self.MODEL)
+
+        # Fast permanent free tiers (no card for most)
+        add("groq", "https://api.groq.com/openai/v1", self.GROQ_API_KEY, self.GROQ_MODEL)
+        add("cerebras", "https://api.cerebras.ai/v1", self.CEREBRAS_API_KEY, self.CEREBRAS_MODEL)
+        add("mistral", "https://api.mistral.ai/v1", self.MISTRAL_API_KEY, self.MISTRAL_MODEL)
+        add("nvidia", "https://integrate.api.nvidia.com/v1", self.NVIDIA_API_KEY, self.NVIDIA_MODEL)
+        add("sambanova", "https://api.sambanova.ai/v1", self.SAMBANOVA_API_KEY, self.SAMBANOVA_MODEL)
+        add("llm7", "https://api.llm7.io/v1", self.LLM7_API_KEY, self.LLM7_MODEL)
+        add(
+            "github_models",
+            "https://models.github.ai/inference",
+            self.GITHUB_MODELS_TOKEN or self.GITHUB_TOKEN,
+            self.GITHUB_MODELS_MODEL,
+        )
+        add("huggingface", "https://router.huggingface.co/v1", self.HF_TOKEN, self.HF_MODEL)
+        add("gemini_openai", "https://generativelanguage.googleapis.com/v1beta/openai/", self.GEMINI_API_KEY, self.GEMINI_MODEL)
+        add("zhipu", "https://open.bigmodel.cn/api/paas/v4", self.ZHIPU_API_KEY, self.ZHIPU_MODEL)
+
+        # Registration free / cheap
+        add("openrouter", "https://openrouter.ai/api/v1", self.OPENROUTER_API_KEY, "google/gemini-2.0-flash-exp:free")
+        add("deepseek", "https://api.deepseek.com/v1", self.DEEPSEEK_API_KEY, self.DEEPSEEK_MODEL)
+        add("together", "https://api.together.xyz/v1", self.TOGETHER_API_KEY, "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
+        add("xai", "https://api.x.ai/v1", self.XAI_API_KEY, self.XAI_MODEL)
+        add("siliconflow", "https://api.siliconflow.cn/v1", self.SILICONFLOW_API_KEY, self.SILICONFLOW_MODEL)
+        add("ollama_cloud", "https://api.ollama.com/v1", self.OLLAMA_API_KEY, self.OLLAMA_MODEL)
+        add("modelscope", "https://api-inference.modelscope.cn/v1", self.MODELSCOPE_API_KEY, self.MODELSCOPE_MODEL)
+        add("alibaba", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", self.ALIBABA_API_KEY, self.ALIBABA_MODEL)
+        add("ovh", "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", self.OVH_API_KEY, self.OVH_MODEL)
+        add("chutes", "https://api.chutes.ai/v1", self.CHUTES_API_KEY, self.CHUTES_MODEL)
+        add("glhf", "https://glhf.chat/api/openai/v1", self.GLHF_API_KEY, self.GLHF_MODEL)
+        add("nebius", "https://api.studio.nebius.com/v1", self.NEBIUS_API_KEY, self.NEBIUS_MODEL)
+        add("nscale", "https://inference.api.nscale.com/v1", self.NSCALE_API_KEY, self.NSCALE_MODEL)
+        add("agnes", "https://apihub.agnes-ai.com/v1", self.AGNES_API_KEY, self.AGNES_MODEL)
+        add("aion", "https://api.aionlabs.ai/v1", self.AION_API_KEY, self.AION_MODEL)
+        add("ai21", "https://api.ai21.com/studio/v1", self.AI21_API_KEY, self.AI21_MODEL)
+
+        # User-defined extras
         try:
             extra = json.loads(self.FREE_FALLBACKS or "[]")
             if isinstance(extra, list):
                 for item in extra:
                     if item.get("api_key") and item.get("base_url"):
-                        chain.append({
-                            "name": item.get("name", "fallback"),
-                            "base_url": item["base_url"],
-                            "api_key": item["api_key"],
-                            "model": item.get("model", self.MODEL),
-                        })
+                        add(
+                            item.get("name", "custom"),
+                            item["base_url"],
+                            item["api_key"],
+                            item.get("model") or self.MODEL,
+                        )
         except Exception:
             pass
+
         seen = set()
-        unique = []
+        unique: List[Dict[str, Any]] = []
         for p in chain:
-            key = (p["base_url"], p["api_key"][:12])
+            key = (p["base_url"], p["api_key"][:16])
             if key not in seen:
                 seen.add(key)
                 unique.append(p)

@@ -17,7 +17,7 @@ from handlers.chat import router as chat_router
 from handlers.media import router as media_router
 from handlers.inline import router as inline_router
 from handlers.callbacks import router as callbacks_router
-from handlers.secretary import router as secretary_router
+from handlers.payments import router as payments_router
 from web.dashboard import app as fastapi_app
 from services.scheduler import start_scheduler, reload_skills_now
 
@@ -35,7 +35,12 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(media_router)
     dp.include_router(inline_router)
     dp.include_router(callbacks_router)
-    dp.include_router(secretary_router)
+    dp.include_router(payments_router)
+    try:
+        from handlers.secretary import router as secretary_router
+        dp.include_router(secretary_router)
+    except Exception as e:
+        logger.warning("secretary router skipped: %s", e)
     return dp
 
 
@@ -48,6 +53,7 @@ async def run_polling(bot: Bot, dp: Dispatcher):
             "message", "callback_query", "inline_query",
             "business_connection", "business_message",
             "edited_business_message", "deleted_business_messages",
+            "pre_checkout_query", "message",
         ],
     )
 
@@ -78,38 +84,32 @@ async def run_webhook(bot: Bot, dp: Dispatcher):
 
 
 async def run_dashboard():
-    # Render injects PORT — must bind to it for Web Service health checks
     port = int(os.environ.get("PORT") or settings.DASHBOARD_PORT or 8080)
     host = settings.DASHBOARD_HOST or "0.0.0.0"
-    logger.info("Dashboard/uptime listening on %s:%s", host, port)
-    config = uvicorn.Config(
-        fastapi_app,
-        host=host,
-        port=port,
-        log_level="info",
-    )
+    logger.info("Dashboard/uptime on %s:%s", host, port)
+    config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
 
 
 async def self_ping_loop():
-    """Optional: ping our own /health so Render free tier stays awake."""
+    """Keep Render free tier awake by pinging /health every 4 minutes."""
     url = (os.environ.get("RENDER_EXTERNAL_URL") or getattr(settings, "PUBLIC_URL", "") or "").rstrip("/")
     if not url:
-        logger.info("self_ping disabled (set RENDER_EXTERNAL_URL or PUBLIC_URL)")
+        logger.info("self_ping off (set PUBLIC_URL or RENDER_EXTERNAL_URL)")
         return
     import aiohttp
     endpoint = url + "/health"
-    logger.info("self_ping enabled → %s every 4 min", endpoint)
-    await asyncio.sleep(30)
+    logger.info("self_ping → %s", endpoint)
+    await asyncio.sleep(20)
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    logger.debug("self_ping %s", resp.status)
+            async with aiohttp.ClientSession() as s:
+                async with s.get(endpoint, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    logger.debug("self_ping %s", r.status)
         except Exception as e:
-            logger.debug("self_ping fail: %s", e)
-        await asyncio.sleep(240)  # 4 minutes
+            logger.debug("self_ping: %s", e)
+        await asyncio.sleep(240)
 
 
 async def main():
@@ -128,23 +128,14 @@ async def main():
         await bot.set_my_commands([
             BotCommand(command="start", description="Start"),
             BotCommand(command="help", description="Help"),
-            BotCommand(command="clear", description="Clear chat memory"),
-            BotCommand(command="skill", description="Schedules / reminders"),
-            BotCommand(command="lang", description="Language"),
-            BotCommand(command="memory", description="Your memory"),
         ])
     except Exception:
         pass
     mode = (settings.MODE or "polling").lower()
     logger.info(f"Starting obra mode={mode}")
-    # startup self-check
     try:
         from services.tools import TOOLS
-        from services.scheduler import start_scheduler as _ss
-        logger.info("self_check tools=%s rich=%s scheduler=%s secretary=on",
-                    len(TOOLS),
-                    getattr(settings, "USE_RICH_MESSAGES", True),
-                    getattr(settings, "ENABLE_SCHEDULER", True))
+        logger.info("self_check tools=%s rich=%s", len(TOOLS), getattr(settings, "USE_RICH_MESSAGES", True))
     except Exception as e:
         logger.warning("self_check: %s", e)
 
