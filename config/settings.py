@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     CHUTES_MODEL: str = "deepseek-ai/DeepSeek-V3"
     GLHF_MODEL: str = "hf:meta-llama/Meta-Llama-3.1-70B-Instruct"
     DEEPSEEK_MODEL: str = "deepseek-chat"
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
     MODELSCOPE_MODEL: str = "Qwen/Qwen2.5-72B-Instruct"
     ALIBABA_MODEL: str = "qwen-turbo"
     OVH_MODEL: str = "Meta-Llama-3_3-70B-Instruct"
@@ -191,7 +191,7 @@ class Settings(BaseSettings):
         add("zhipu", "https://open.bigmodel.cn/api/paas/v4", self.ZHIPU_API_KEY, self.ZHIPU_MODEL)
 
         # Registration free / cheap
-        add("openrouter", "https://openrouter.ai/api/v1", self.OPENROUTER_API_KEY, "google/gemini-2.0-flash-exp:free")
+        add("openrouter", "https://openrouter.ai/api/v1", self.OPENROUTER_API_KEY, "google/gemini-2.5-flash:free")
         add("deepseek", "https://api.deepseek.com/v1", self.DEEPSEEK_API_KEY, self.DEEPSEEK_MODEL)
         add("together", "https://api.together.xyz/v1", self.TOGETHER_API_KEY, "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
         add("xai", "https://api.x.ai/v1", self.XAI_API_KEY, self.XAI_MODEL)

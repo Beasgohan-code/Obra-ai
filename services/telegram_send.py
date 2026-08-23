@@ -1,21 +1,17 @@
 """
-Reliable Rich Message sender for Bot API 10.1+.
+Rich Messages for Telegram Bot API 10.1+ (headings, tables, thinking, 32k).
 
-Why normal messages appeared before:
-- aiogram typed helpers can fail / be missing on older wheels
-- exceptions were swallowed → always fell back to sendMessage (4096)
-
-This module tries, in order:
-1) bot.send_rich_message / send_rich_message_draft (aiogram 3.29+)
-2) raw HTTP session call to sendRichMessage / sendRichMessageDraft
-3) HTML send_message chunks (best-effort structure)
+Order:
+1) Direct HTTPS sendRichMessage / sendRichMessageDraft (most reliable)
+2) aiogram typed helpers if present
+3) HTML sendMessage chunks
 """
-
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import aiohttp
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
@@ -32,24 +28,40 @@ def _clip_rich(text: str, limit: int = 32000) -> str:
     return text[: limit - 20] + "\n\n…(truncated)"
 
 
-async def _raw_api(bot: Bot, method: str, **payload) -> dict:
-    """Call Bot API method via aiogram session (works even without typed methods)."""
-    session = bot.session
-    # aiogram 3: session.make_request(bot, method, data)
-    if hasattr(session, "make_request"):
-        return await session.make_request(bot, method, payload)
-    if hasattr(session, "request"):
-        return await session.request(method=method, data=payload)
-    # last resort: bot.__call__ style
-    return await bot(method, **payload)  # may not work on all versions
+async def _api(bot: Bot, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Direct call to api.telegram.org — bypasses aiogram method gaps."""
+    url = f"https://api.telegram.org/bot{bot.token}/{method}"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            data = await resp.json(content_type=None)
+            if not data.get("ok"):
+                raise RuntimeError(data.get("description") or str(data))
+            return data.get("result") or data
 
 
 async def send_thinking_draft(bot: Bot, chat_id: int, draft_id: int, stage: str = "Thinking…") -> bool:
-    if not settings.USE_RICH_MESSAGES:
+    if not getattr(settings, "USE_RICH_MESSAGES", True):
         return False
-    # Prefer HTML thinking tag (Bot API supports <tg-thinking> in drafts)
-    rich = {"html": f"<tg-thinking>{stage}</tg-thinking>"}
-    # 1) typed
+    stage = (stage or "Thinking…")[:200]
+    # Direct API first
+    for rich in (
+        {"html": f"<tg-thinking>{stage}</tg-thinking>"},
+        {"markdown": f"*{stage}*"},
+    ):
+        try:
+            await _api(
+                bot,
+                "sendRichMessageDraft",
+                {
+                    "chat_id": chat_id,
+                    "draft_id": draft_id,
+                    "rich_message": rich,
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug("draft %s: %s", list(rich.keys()), e)
+    # typed fallback
     try:
         from aiogram.types import InputRichMessage
         await bot.send_rich_message_draft(
@@ -58,21 +70,8 @@ async def send_thinking_draft(bot: Bot, chat_id: int, draft_id: int, stage: str 
             rich_message=InputRichMessage(html=f"<tg-thinking>{stage}</tg-thinking>"),
         )
         return True
-    except Exception as e:
-        logger.debug("typed draft failed: %s", e)
-    # 2) raw
-    try:
-        await _raw_api(
-            bot,
-            "sendRichMessageDraft",
-            chat_id=chat_id,
-            draft_id=draft_id,
-            rich_message=rich,
-        )
-        return True
-    except Exception as e:
-        logger.debug("raw draft failed: %s", e)
-    return False
+    except Exception:
+        return False
 
 
 async def send_rich(
@@ -81,74 +80,61 @@ async def send_rich(
     text: str,
     *,
     reply_to: Optional[int] = None,
-    prefer_html: bool = False,
+    prefer_html: bool = True,
 ) -> bool:
-    """
-    Send final reply as Rich Message (up to 32k).
-    Returns True if rich path succeeded.
-    """
-    text = _clip_rich(text)
-    if not prefer_html and ("<details>" in text or "<tg-" in text or "<h1>" in text or "<table>" in text):
-        prefer_html = True
-    if not settings.USE_RICH_MESSAGES:
+    """Send final reply as Rich Message (up to 32k)."""
+    text = _clip_rich(text or "")
+    if not text.strip():
+        text = "…"
+    if not getattr(settings, "USE_RICH_MESSAGES", True):
         await _plain_chunks(bot, chat_id, text, reply_to)
         return False
 
-    payload_md = {"markdown": text}
-    payload_html = None
-    if prefer_html or text.lstrip().startswith("<") or "<details>" in text:
-        payload_html = {"html": text if text.lstrip().startswith("<") else md_to_rich_html(text)}
-    else:
-        # always try a converted html as secondary path
-        try:
-            payload_html = {"html": md_to_rich_html(text)}
-        except Exception:
-            payload_html = None
-
-    # 1) typed aiogram
+    # Always prepare HTML with headings/tables for max polish
     try:
-        from aiogram.types import InputRichMessage
-        from aiogram.types import ReplyParameters
+        html = md_to_rich_html(text) if not text.lstrip().startswith("<") else text
+    except Exception:
+        html = _md_to_simple_html(text)
 
-        rm = InputRichMessage(html=text) if payload_html else InputRichMessage(markdown=text)
-        kwargs = {"chat_id": chat_id, "rich_message": rm}
+    attempts = [
+        {"html": html},
+        {"markdown": text},
+    ]
+
+    for rich in attempts:
+        body: Dict[str, Any] = {"chat_id": chat_id, "rich_message": rich}
+        if reply_to:
+            body["reply_parameters"] = {"message_id": reply_to}
+        try:
+            await _api(bot, "sendRichMessage", body)
+            logger.info("RICH ok chat=%s via %s", chat_id, list(rich.keys())[0])
+            return True
+        except Exception as e:
+            logger.warning("sendRichMessage %s failed: %s", list(rich.keys())[0], e)
+
+    # typed aiogram
+    try:
+        from aiogram.types import InputRichMessage, ReplyParameters
+        rm = InputRichMessage(html=html)
+        kwargs: Dict[str, Any] = {"chat_id": chat_id, "rich_message": rm}
         if reply_to:
             try:
                 kwargs["reply_parameters"] = ReplyParameters(message_id=reply_to)
             except Exception:
                 kwargs["reply_to_message_id"] = reply_to
         await bot.send_rich_message(**kwargs)
-        logger.info("rich send via typed aiogram ok chat=%s", chat_id)
+        logger.info("RICH ok typed chat=%s", chat_id)
         return True
     except Exception as e:
-        logger.debug("typed send_rich_message failed: %s", e)
+        logger.debug("typed rich failed: %s", e)
 
-    # 2) raw API
-    for rich in ([payload_html, payload_md] if payload_html else [payload_md, {"html": _md_to_simple_html(text)}]):
-        if not rich:
-            continue
-        try:
-            body = {
-                "chat_id": chat_id,
-                "rich_message": rich,
-            }
-            if reply_to:
-                body["reply_parameters"] = {"message_id": reply_to}
-            await _raw_api(bot, "sendRichMessage", **body)
-            logger.info("rich send via raw API ok chat=%s keys=%s", chat_id, list(rich.keys()))
-            return True
-        except Exception as e:
-            logger.warning("raw sendRichMessage failed (%s): %s", list(rich.keys()), e)
-
-    # 3) plain fallback
-    await _plain_chunks(bot, chat_id, text, reply_to)
-    logger.warning("RICH_FALLBACK plain sendMessage chat=%s — install aiogram>=3.30", chat_id)
+    await _plain_chunks(bot, chat_id, html if "<" in html else text, reply_to)
+    logger.warning("RICH_FALLBACK plain chat=%s", chat_id)
     return False
 
 
 async def _plain_chunks(bot: Bot, chat_id: int, text: str, reply_to: Optional[int]):
-    # Prefer HTML if looks like tags; else Markdown-ish as plain
-    mode = ParseMode.HTML if "<" in text[:200] and ">" in text[:200] else None
+    mode = ParseMode.HTML if "<" in (text or "")[:300] else None
     step = 3500 if mode else 4000
     for i in range(0, len(text), step):
         chunk = text[i : i + step]
@@ -168,10 +154,8 @@ async def _plain_chunks(bot: Bot, chat_id: int, text: str, reply_to: Optional[in
 
 
 def _md_to_simple_html(text: str) -> str:
-    """Very light markdown → HTML for rich fallback."""
     import html
     import re
-
     t = html.escape(text)
     t = re.sub(r"^###### (.+)$", r"<h6>\1</h6>", t, flags=re.M)
     t = re.sub(r"^##### (.+)$", r"<h5>\1</h5>", t, flags=re.M)
@@ -188,19 +172,17 @@ def _md_to_simple_html(text: str) -> str:
 
 
 async def send_ephemeral(bot: Bot, chat_id: int, user_id: int, text: str) -> bool:
-    """
-    Bot API 10.2 — message in a group visible only to user_id + bot.
-    Falls back to normal DM if ephemeral not supported.
-    """
     text = _clip_rich(text, 4000)
     try:
-        await _raw_api(
+        await _api(
             bot,
             "sendMessage",
-            chat_id=chat_id,
-            text=text,
-            receiver_user_id=user_id,
-            parse_mode="HTML",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "receiver_user_id": user_id,
+                "parse_mode": "HTML",
+            },
         )
         return True
     except Exception:

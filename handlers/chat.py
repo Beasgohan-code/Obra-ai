@@ -270,6 +270,8 @@ async def chat_handler(message: Message, bot: Bot):
                 # inject chat_id for group tools
                 if tc["name"] == "group_remember" and isinstance(tc.get("arguments"), dict):
                     tc["arguments"].setdefault("chat_id", chat_id)
+                if tc["name"] == "clear_chat" and isinstance(tc.get("arguments"), dict):
+                    tc["arguments"].setdefault("chat_id", chat_id)
                 result_t = None
                 last_err = None
                 for _try in range(max(1, getattr(settings, "TOOL_MAX_RETRIES", 2) + 1)):
@@ -399,7 +401,8 @@ async def chat_handler(message: Message, bot: Bot):
         # auto react
         if settings.AUTO_REACT:
             try:
-                await tg_react(bot, chat_id, message.message_id, "👍")
+                emoji = {"coder": "💻", "researcher": "🔍", "writer": "✍️", "solver": "🚀", "terminal": "⌨️"}.get(agent, "👍")
+                await tg_react(bot, chat_id, message.message_id, emoji)
             except Exception:
                 pass
         # auto project title from first long chat

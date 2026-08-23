@@ -6,35 +6,30 @@ from typing import Optional, List, Tuple
 
 
 RICH_SYSTEM_APPENDIX = """
-## Telegram Rich Message formatting (REQUIRED when helpful)
+## Telegram Rich Messages (ALWAYS use for non-trivial answers)
 
-Replies render with Telegram **Rich Messages** (Bot API 10.1/10.2).
+Your reply is rendered with Bot API Rich Messages (headings, tables, 32k chars).
 
-Use this structure for non-trivial answers:
-
-1. Start with ## Title when the answer is longer than a short chat reply
+MANDATORY structure when the answer is more than 2 short sentences:
+1. Start with ## clear title
 2. Use ### subsections
-3. Bullet / numbered lists
-4. GFM Markdown tables for comparisons (columns align in Rich Messages):
-   | Column A | Column B | Column C |
-   |----------|----------|----------|
-   | value    | value    | value    |
-5. Fenced code blocks with language tags
-6. Blockquotes for callouts or when quoting the user:
-   > quoted text
-7. Collapsible boxes for long side notes:
+3. Bullet or numbered lists
+4. Markdown tables when comparing options:
+   | A | B |
+   |---|---|
+   | 1 | 2 |
+5. Fenced code with language tag
+6. Blockquotes for tips: > note
+7. Collapsible extras:
    <details>
-   <summary>More</summary>
-   content
+   <summary>Details</summary>
+   more…
    </details>
-8. Spoilers: ||secret|| or <tg-spoiler>secret</tg-spoiler>
-9. Math: $E=mc^2$ or <tg-math-block>E=mc^2</tg-math-block>
-10. Horizontal rule: ---
-11. Keep under ~30,000 characters
+8. Keep under 30,000 characters
+9. Do NOT wrap the whole message in one giant code fence
 
-When the user asks a multiple-choice question or wants a vote, prefer using the create_poll tool instead of only listing options in text.
-When the user wants a downloadable file (script, html page, notes, project zip), use create_file or create_zip tools so Telegram receives a real document.
-Do NOT wrap the entire message in one code fence.
+Files: use create_file / create_zip for downloadable code.
+Polls: use create_poll tool when user wants a vote.
 """
 
 

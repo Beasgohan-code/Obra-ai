@@ -1,29 +1,34 @@
-# Obra features
+# Obra — feature checklist
 
 ## Commands
-Only `/start` and `/help`. Everything else is natural language + agents.
+- /start · /help only
 
 ## Agents (auto)
 coder · researcher · writer · solver · summarizer · terminal
 
-## Premium (Telegram Stars)
-- Free: daily + monthly quotas
-- Premium: higher limits, 30 days via Stars invoice
-- Say: upgrade / usage
+## Rich Messages
+Thinking drafts · headings · tables · 32k · direct Bot API
 
 ## Coding
-Professional full-project delivery via create_file / create_zip
-Auto-export code blocks as files when needed
+Full projects · create_file / create_zip · auto-export · up to 32k tokens
+
+## Premium (Telegram Stars)
+Daily + monthly quotas · upgrade via Stars invoice
 
 ## Skills
-- Natural: "every 1 minutes: hi"
-- Reply to .md/text: "make skill" / "save skill"
+Natural schedule · reply to .md "make skill" · list/delete via AI tools
 
 ## Memory
-SQLite KV + vector memory + group brain
+remember / forget · vector memory · group brain · set_language
 
 ## Terminal
-`run: print(1+1)` or ask agent to run Python in sandbox
+run_python sandbox · `run: ...`
 
-## Free LLM fallbacks
-See Api.md (awesome-freellm-apis providers)
+## Secretary Mode
+business_message auto-reply · /secretary via natural language settings
+
+## Free LLMs
+Groq, Gemini 3.6, Cerebras, Mistral, OpenRouter, NVIDIA, … (Api.md)
+
+## Ops
+Uptime /health · self-ping · rate limits · dashboard

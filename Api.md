@@ -11,7 +11,7 @@ Obra tries providers **in order** until one works. Set keys in `.env` / Render. 
 | `GROQ_API_KEY` | api.groq.com/openai/v1 | https://console.groq.com/keys | llama-3.3-70b-versatile |
 | `CEREBRAS_API_KEY` | api.cerebras.ai/v1 | https://cloud.cerebras.ai/ | llama-3.3-70b |
 | `MISTRAL_API_KEY` | api.mistral.ai/v1 | https://console.mistral.ai/api-keys | mistral-small-latest |
-| `GEMINI_API_KEY` | Google OpenAI-compat | https://aistudio.google.com/app/apikey | gemini-2.0-flash |
+| `GEMINI_API_KEY` | Google OpenAI-compat | https://aistudio.google.com/app/apikey | gemini-3.6-flash |
 | `LLM7_API_KEY` | api.llm7.io/v1 | https://token.llm7.io | gpt-4o-mini |
 | `GITHUB_MODELS_TOKEN` | models.github.ai/inference | https://github.com/marketplace/models | openai/gpt-4o-mini |
 | `HF_TOKEN` | router.huggingface.co/v1 | https://huggingface.co/settings/tokens | Meta-Llama-3.1-8B |

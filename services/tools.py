@@ -297,6 +297,53 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "delete_skill",
+            "description": "Delete a saved skill by numeric id from list_skills.",
+            "parameters": {
+                "type": "object",
+                "properties": {"skill_id": {"type": "integer"}},
+                "required": ["skill_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget",
+            "description": "Clear long-term user memory (all, notes, name, or preferences).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "what": {"type": "string", "description": "all | notes | name | preferences"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_language",
+            "description": "Set preferred reply language (en, hi, es, ar, bn, ...).",
+            "parameters": {
+                "type": "object",
+                "properties": {"language": {"type": "string"}},
+                "required": ["language"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_chat",
+            "description": "Clear short-term conversation history for the current chat.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+
+
+    {
+        "type": "function",
+        "function": {
             "name": "gmail_unread",
             "description": "List recent unread Gmail messages (requires Google OAuth tokens).",
             "parameters": {
@@ -627,6 +674,41 @@ async def run_tool(name: str, arguments: Dict[str, Any], user_id: int = None) ->
                 arguments.get("prompt", "landscape"), arguments.get("size", "1024x1024")
             )
             return img_res[0], img_res[1], None
+
+        if name == "delete_skill":
+            if not user_id:
+                return "No user context", None, None
+            sid = int(arguments.get("skill_id") or 0)
+            await db.delete_skill(user_id, sid)
+            try:
+                from services.scheduler import reload_skills_now
+                await reload_skills_now()
+            except Exception:
+                pass
+            return f"Deleted skill #{sid}", None, None
+        if name == "forget":
+            if not user_id:
+                return "No user context", None, None
+            what = (arguments.get("what") or "all").lower()
+            if what in ("all", "notes"):
+                await db.set_user_memory(user_id, notes="")
+            if what in ("all", "name"):
+                await db.set_user_memory(user_id, name="")
+            if what in ("all", "preferences"):
+                await db.set_user_memory(user_id, preferences={})
+            return f"Forgot: {what}", None, None
+        if name == "set_language":
+            if not user_id:
+                return "No user context", None, None
+            lang = (arguments.get("language") or "en")[:5].lower()
+            await db.set_user_settings(user_id, language=lang)
+            return f"Language set to {lang}", None, None
+        if name == "clear_chat":
+            cid = arguments.get("chat_id")
+            if not cid:
+                return "No chat context", None, None
+            await db.clear_history(int(cid))
+            return "Chat history cleared.", None, None
         return f"Unknown tool: {name}", None, None
     except Exception as e:
         return f"Tool error ({name}): {e}", None, None
