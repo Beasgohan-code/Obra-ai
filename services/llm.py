@@ -9,6 +9,70 @@ import logging
 
 logger = logging.getLogger("obra.llm")
 
+def _is_gemini_endpoint(base_url: str, model: str = "") -> bool:
+    u = (base_url or "").lower()
+    m = (model or "").lower()
+    return "generativelanguage.googleapis.com" in u or "gemini" in m
+
+
+def _extract_tool_calls(message) -> list:
+    """Parse tool calls and preserve Gemini thought_signature / extra_content."""
+    out = []
+    for tc in (getattr(message, "tool_calls", None) or []):
+        item = {
+            "id": tc.id,
+            "name": tc.function.name,
+            "arguments": json.loads(tc.function.arguments or "{}"),
+        }
+        # OpenAI-compat Gemini attaches signature here
+        extra = None
+        if hasattr(tc, "model_extra") and tc.model_extra:
+            extra = tc.model_extra.get("extra_content") or tc.model_extra
+        if hasattr(tc, "extra_content") and tc.extra_content:
+            extra = tc.extra_content if not isinstance(tc.extra_content, dict) else tc.extra_content
+        # pydantic v2
+        try:
+            dump = tc.model_dump(exclude_none=True) if hasattr(tc, "model_dump") else {}
+            if dump.get("extra_content"):
+                extra = dump["extra_content"]
+            # some SDKs nest under function
+            if not extra and isinstance(dump.get("function"), dict):
+                extra = dump["function"].get("extra_content")
+        except Exception:
+            pass
+        sig = None
+        if isinstance(extra, dict):
+            g = extra.get("google") or {}
+            sig = g.get("thought_signature") or extra.get("thought_signature")
+        if sig:
+            item["extra_content"] = {"google": {"thought_signature": sig}}
+        out.append(item)
+    return out
+
+
+def _assistant_tool_message(content, tool_calls: list, gemini: bool = False) -> dict:
+    """Build assistant message with tool_calls, injecting Gemini signature bypass if needed."""
+    formatted = []
+    for i, tc in enumerate(tool_calls):
+        entry = {
+            "id": tc["id"],
+            "type": "function",
+            "function": {
+                "name": tc["name"],
+                "arguments": json.dumps(tc["arguments"]) if isinstance(tc.get("arguments"), dict) else (tc.get("arguments") or "{}"),
+            },
+        }
+        extra = tc.get("extra_content")
+        if not extra and gemini:
+            # Official bypass sentinel when signature was stripped by OpenAI-compat layer
+            extra = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+        if extra:
+            entry["extra_content"] = extra
+        formatted.append(entry)
+    msg = {"role": "assistant", "content": content, "tool_calls": formatted}
+    return msg
+
+
 AGENTS = {
     "default": """Agent: general.
 Understand intent, use tools when useful, deliver finished results.
@@ -112,7 +176,23 @@ class ProviderPool:
             raise RuntimeError("No LLM providers configured. Set GROQ_API_KEY / OPENROUTER_API_KEY / etc.")
 
         full = [{"role": "system", "content": system or AGENTS["default"]}]
-        full.extend(messages)
+        # Sanitize history for Gemini thought_signature requirements
+        patched = []
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                gem = True  # safe to inject sentinel; non-Gemini ignores unknown fields
+                patched.append(_assistant_tool_message(m.get("content"), [
+                    {
+                        "id": tc.get("id"),
+                        "name": (tc.get("function") or {}).get("name") or tc.get("name"),
+                        "arguments": (tc.get("function") or {}).get("arguments") or tc.get("arguments") or {},
+                        "extra_content": tc.get("extra_content"),
+                    }
+                    for tc in m["tool_calls"]
+                ], gemini=gem))
+            else:
+                patched.append(m)
+        full.extend(patched)
         last_err: Optional[Exception] = None
 
         for i, prov in enumerate(chain):
@@ -155,14 +235,8 @@ class ProviderPool:
                 "model_used": use_model,
             }
             if getattr(message, "tool_calls", None):
-                result["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": json.loads(tc.function.arguments or "{}"),
-                    }
-                    for tc in message.tool_calls
-                ]
+                result["tool_calls"] = _extract_tool_calls(message)
+                result["gemini"] = _is_gemini_endpoint(prov["base_url"], use_model)
             if i > 0:
                 logger.info("Fell back to provider=%s model=%s", prov["name"], use_model)
             return result

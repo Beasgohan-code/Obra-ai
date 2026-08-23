@@ -258,14 +258,13 @@ async def chat_handler(message: Message, bot: Bot):
                 break
             await send_thinking(bot, chat_id, draft_id, f"Tools… ({rnd+1})")
             raw = result["raw_message"]
-            history.append({
-                "role": "assistant",
-                "content": raw.content,
-                "tool_calls": [
-                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                    for tc in (raw.tool_calls or [])
-                ],
-            })
+            from services.llm import _assistant_tool_message
+            tcs = result.get("tool_calls") or []
+            history.append(_assistant_tool_message(
+                getattr(raw, "content", None),
+                tcs,
+                gemini=bool(result.get("gemini")),
+            ))
             for tc in result["tool_calls"]:
                 # inject chat_id for group tools
                 if tc["name"] == "group_remember" and isinstance(tc.get("arguments"), dict):
