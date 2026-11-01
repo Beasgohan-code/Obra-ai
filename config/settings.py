@@ -128,6 +128,17 @@ class Settings(BaseSettings):
     WEBHOOK_PATH: str = "/webhook"
     WEBHOOK_SECRET: str = ""
 
+    # LLM resilience
+    LLM_TIMEOUT_SECONDS: float = 90.0
+    PROVIDER_RETRIES: int = 1
+    PROVIDER_COOLDOWN_SECONDS: float = 60.0
+
+    # Safety limits
+    MAX_MESSAGE_CHARS: int = 20000
+    MAX_HISTORY_MSG_CHARS: int = 4000
+    SANDBOX_TIMEOUT_SECONDS: int = 8
+    GITHUB_WEBHOOK_SECRET: str = ""  # optional: verify X-Hub-Signature-256 on /inbound
+
     DB_PATH: str = "data/obra.db"
     CHROMA_PATH: str = "data/chroma"
 

@@ -147,12 +147,48 @@ def detect_agent(text: str) -> str:
 class ProviderPool:
     def __init__(self):
         self._clients: Dict[str, AsyncOpenAI] = {}
+        # provider name -> unix ts until which it is skipped after failures
+        self._down_until: Dict[str, float] = {}
+        # provider name -> {"ok": int, "fail": int, "last_error": str}
+        self.stats: Dict[str, Dict[str, Any]] = {}
+        self.cooldown_seconds = float(getattr(settings, "PROVIDER_COOLDOWN_SECONDS", 60) or 60)
 
     def _client(self, base_url: str, api_key: str) -> AsyncOpenAI:
         key = f"{base_url}|{api_key[:16]}"
         if key not in self._clients:
-            self._clients[key] = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=180.0)
+            timeout = float(getattr(settings, "LLM_TIMEOUT_SECONDS", 90) or 90)
+            self._clients[key] = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         return self._clients[key]
+
+    def _mark(self, name: str, ok: bool, err: str = ""):
+        import time
+        st = self.stats.setdefault(name, {"ok": 0, "fail": 0, "last_error": ""})
+        if ok:
+            st["ok"] += 1
+            st["last_error"] = ""
+            self._down_until.pop(name, None)
+        else:
+            st["fail"] += 1
+            st["last_error"] = err[:200]
+            self._down_until[name] = time.time() + self.cooldown_seconds
+
+    def _is_down(self, name: str) -> bool:
+        import time
+        until = self._down_until.get(name)
+        return bool(until and time.time() < until)
+
+    def healthy_providers(self, chain: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Chain with cooling-down providers moved to the back (used only if all are down)."""
+        up = [p for p in chain if not self._is_down(p["name"])]
+        down = [p for p in chain if self._is_down(p["name"])]
+        return up + down
+
+    def provider_stats(self) -> Dict[str, Dict[str, Any]]:
+        import time
+        out = {}
+        for name, st in self.stats.items():
+            out[name] = {**st, "cooling_down": self._is_down(name)}
+        return out
 
     async def chat(
         self,
@@ -199,6 +235,9 @@ class ProviderPool:
         full.extend(patched)
         last_err: Optional[Exception] = None
 
+        import asyncio
+        retries = max(0, int(getattr(settings, "PROVIDER_RETRIES", 1) or 0))
+
         for i, prov in enumerate(chain):
             use_model = prov.get("model") or settings.MODEL
             if i == 0 and model:
@@ -210,26 +249,35 @@ class ProviderPool:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
-            try:
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
-                response = await client.chat.completions.create(**kwargs)
-            except Exception as e1:
-                if tools:
-                    try:
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            response = None
+            err = None
+            for attempt in range(retries + 1):
+                try:
+                    response = await client.chat.completions.create(**kwargs)
+                    err = None
+                    break
+                except Exception as e1:
+                    err = e1
+                    # Some providers reject tool calling — retry once without tools
+                    if tools and kwargs.get("tools"):
                         kwargs.pop("tools", None)
                         kwargs.pop("tool_choice", None)
-                        response = await client.chat.completions.create(**kwargs)
-                    except Exception as e2:
-                        last_err = e2
-                        logger.warning("Provider %s failed (will try next): %s", prov["name"], e2)
+                        logger.info("Provider %s: retrying without tools (%s)", prov["name"], str(e1)[:120])
                         continue
-                else:
-                    last_err = e1
-                    logger.warning("Provider %s failed (will try next): %s", prov["name"], e1)
-                    continue
+                    if attempt < retries:
+                        await asyncio.sleep(min(2 ** attempt, 4) * 0.5)
+                        continue
+            if response is None:
+                last_err = err
+                self._mark(prov["name"], False, str(err)[:200])
+                logger.warning("Provider %s failed (will try next): %s", prov["name"], str(err)[:200])
+                continue
 
+            self._mark(prov["name"], True)
             message = response.choices[0].message
             result: Dict[str, Any] = {
                 "content": message.content,

@@ -141,7 +141,8 @@ async def chat_handler(message: Message, bot: Bot):
         await message.answer(qr, parse_mode="Markdown")
         await db.add_message(message.chat.id, "user", text)
         await db.add_message(message.chat.id, "assistant", qr)
-        
+        return  # BUGFIX: previously fell through and ALSO sent a full LLM reply
+
     # Premium / usage intents (natural language — no commands)
     low_intent = text.lower().strip()
     if low_intent in ("upgrade", "premium", "buy premium", "stars", "buy stars") or "buy premium" in low_intent:
@@ -220,6 +221,12 @@ async def chat_handler(message: Message, bot: Bot):
     await db.log_event(user.id, chat_id, "message", {"agent": agent})
 
     history = await db.get_history(chat_id, limit=settings.MAX_HISTORY_TURNS * 2)
+    # Clip very long history messages so context stays within token budget
+    clip = int(getattr(settings, "MAX_HISTORY_MSG_CHARS", 4000) or 4000)
+    history = [
+        {**h, "content": (h.get("content") or "")[:clip] + ("…" if len(h.get("content") or "") > clip else "")}
+        for h in history
+    ]
     system = await build_system(user.id, text, agent, is_grp, chat_id=chat_id)
     model = settings.model_for(agent)
     us = await db.get_user_settings(user.id)

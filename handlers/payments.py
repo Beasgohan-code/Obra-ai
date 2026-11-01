@@ -72,15 +72,34 @@ async def on_pre_checkout(query: PreCheckoutQuery, bot: Bot):
 
 
 @router.message(F.successful_payment)
-async def on_success(message: Message):
+async def on_success(message: Message, bot: Bot):
     sp: SuccessfulPayment = message.successful_payment
+    uid = message.from_user.id if message.from_user else 0
+
+    # --- Validate everything about the payment; never trust client data ---
     if not sp or sp.invoice_payload != "obra_premium_30d":
+        logger.warning("payment with unexpected payload=%r from %s", getattr(sp, "invoice_payload", None), uid)
         return
+    if (sp.currency or "").upper() != "XTR":
+        logger.warning("payment with bad currency=%r from %s", sp.currency, uid)
+        return
+    expected = int(getattr(settings, "PREMIUM_STARS_PRICE", 50) or 50)
+    if int(sp.total_amount or 0) < expected:
+        logger.warning("payment amount too low (%s < %s) from %s", sp.total_amount, expected, uid)
+        return
+    charge_id = getattr(sp, "telegram_payment_charge_id", "") or ""
+    if not charge_id or await db.is_payment_processed(charge_id):
+        logger.info("duplicate/already-processed charge %s from %s — skipping grant", charge_id, uid)
+        return
+
     days = int(getattr(settings, "PREMIUM_DAYS", 30) or 30)
-    until = await db.grant_premium(message.from_user.id, days=days, stars=sp.total_amount)
+    recorded = await db.record_processed_payment(charge_id, uid, payload=sp.invoice_payload, amount=int(sp.total_amount or 0))
+    if not recorded:
+        return  # lost a race — already processed
+    until = await db.grant_premium(uid, days=days, stars=int(sp.total_amount or 0))
     await message.answer(
         f"✅ <b>Premium activated</b> until <code>{until[:10]}</code>\n"
         f"Stars paid: {sp.total_amount}",
         parse_mode="HTML",
     )
-    await db.log_event(message.from_user.id, message.chat.id, "premium_purchase", {"stars": sp.total_amount})
+    await db.log_event(uid, message.chat.id, "premium_purchase", {"stars": sp.total_amount, "charge_id": charge_id[:16]})

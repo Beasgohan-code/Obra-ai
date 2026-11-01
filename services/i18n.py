@@ -61,8 +61,9 @@ STRINGS = {
 }
 
 
-def t(lang: str, key: str, **kwargs) -> str:
-    block = STRINGS.get(lang) or STRINGS["en"]
+def t(lang_code: str, key: str, **kwargs) -> str:
+    """Translate `key` for language `lang_code` with {placeholder} formatting."""
+    block = STRINGS.get(lang_code) or STRINGS["en"]
     s = block.get(key) or STRINGS["en"].get(key, key)
     try:
         return s.format(**kwargs)

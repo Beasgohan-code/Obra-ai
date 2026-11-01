@@ -88,3 +88,10 @@ docker compose logs -f
 ```
 
 Map ports 8080 (and 8081 if webhook) or put Caddy in front on the host.
+
+## 6. Security extras
+
+- Set `DASHBOARD_SECRET` to a long random string; dashboard login is rate-limited and CSRF-protected.
+- Set `GITHUB_WEBHOOK_SECRET` to enforce `X-Hub-Signature-256` on `POST /inbound/{WEBHOOK_INBOUND_SECRET}`.
+- Mini App: open `https://YOUR-HOST/app` in Telegram; initData is verified server-side.
+- Keep 8080/8081 bound to localhost when reverse-proxying (see above).

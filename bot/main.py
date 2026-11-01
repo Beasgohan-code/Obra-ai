@@ -30,6 +30,19 @@ os.makedirs(settings.CHROMA_PATH, exist_ok=True)
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
+    # Order matters: aiogram stops at the first matching handler, so specific
+    # routers (secretary deep-link, extras, commands incl. the unknown-command
+    # catch-all) must come before the generic chat/media routers.
+    try:
+        from handlers.secretary import router as secretary_router
+        dp.include_router(secretary_router)
+    except Exception as e:
+        logger.warning("secretary router skipped: %s", e)
+    try:
+        from handlers.extras import router as extras_router
+        dp.include_router(extras_router)
+    except Exception as e:
+        logger.warning("extras router skipped: %s", e)
     dp.include_router(commands_router)
     dp.include_router(chat_router)
     dp.include_router(media_router)
@@ -37,25 +50,33 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(callbacks_router)
     dp.include_router(payments_router)
     try:
-        from handlers.secretary import router as secretary_router
-        dp.include_router(secretary_router)
+        from handlers.webapp import router as webapp_router
+        dp.include_router(webapp_router)
     except Exception as e:
-        logger.warning("secretary router skipped: %s", e)
+        logger.warning("webapp router skipped: %s", e)
     return dp
+
+
+ALLOWED_UPDATES = [
+    "message", "callback_query", "inline_query",
+    "business_connection", "business_message",
+    "edited_business_message", "deleted_business_messages",
+    "pre_checkout_query", "edited_message",
+]
 
 
 async def run_polling(bot: Bot, dp: Dispatcher):
     me = await bot.get_me()
     logger.info(f"obra polling as @{me.username}")
-    await dp.start_polling(
-        bot,
-        allowed_updates=[
-            "message", "callback_query", "inline_query",
-            "business_connection", "business_message",
-            "edited_business_message", "deleted_business_messages",
-            "pre_checkout_query", "message",
-        ],
-    )
+    # Resilience: a single network/API error must not kill the bot + dashboard.
+    while True:
+        try:
+            await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("polling crashed (%s) — restarting in 5s", e)
+            await asyncio.sleep(5)
 
 
 async def run_webhook(bot: Bot, dp: Dispatcher):
@@ -97,6 +118,7 @@ async def self_ping_loop():
     url = (os.environ.get("RENDER_EXTERNAL_URL") or getattr(settings, "PUBLIC_URL", "") or "").rstrip("/")
     if not url:
         logger.info("self_ping off (set PUBLIC_URL or RENDER_EXTERNAL_URL)")
+        await asyncio.Event().wait()  # stay alive without busy-looping
         return
     import aiohttp
     endpoint = url + "/health"
@@ -112,10 +134,28 @@ async def self_ping_loop():
         await asyncio.sleep(240)
 
 
+async def _run_forever(coro_factory, name: str):
+    """Run a task forever, restarting it if it crashes."""
+    while True:
+        try:
+            await coro_factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("%s crashed (%s) — restarting in 5s", name, e)
+            await asyncio.sleep(5)
+
+
 async def main():
+    token = (settings.BOT_TOKEN or "").strip()
+    if not token or ":" not in token or len(token) < 20:
+        raise SystemExit(
+            "❌ BOT_TOKEN is missing/invalid. Get one from @BotFather and put it "
+            "in .env (BOT_TOKEN=123456:ABC...) — see .env.example"
+        )
     await db.init()
     bot = Bot(
-        token=settings.BOT_TOKEN,
+        token=token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = build_dispatcher()
@@ -126,8 +166,21 @@ async def main():
         logger.warning("initial skill load: %s", e)
     try:
         await bot.set_my_commands([
-            BotCommand(command="start", description="Start"),
-            BotCommand(command="help", description="Help"),
+            BotCommand(command="start", description="Start obra"),
+            BotCommand(command="help", description="Help & examples"),
+            BotCommand(command="clear", description="Clear chat history"),
+            BotCommand(command="lang", description="Set reply language"),
+            BotCommand(command="memory", description="Show saved memory"),
+            BotCommand(command="forget", description="Forget memory"),
+            BotCommand(command="skill", description="List scheduled skills"),
+            BotCommand(command="setkey", description="Set your own LLM key (BYOK)"),
+            BotCommand(command="project", description="Name this chat project"),
+            BotCommand(command="tts", description="Voice replies on/off"),
+            BotCommand(command="usage", description="Usage & limits"),
+            BotCommand(command="search", description="Search chat + memory"),
+            BotCommand(command="cancel", description="Cancel pending actions"),
+            BotCommand(command="ping", description="Ping"),
+            BotCommand(command="status", description="Bot status"),
         ])
     except Exception:
         pass
@@ -143,9 +196,17 @@ async def main():
         logger.warning("self_check: %s", e)
 
     if mode == "webhook" and settings.WEBHOOK_URL:
-        await asyncio.gather(run_webhook(bot, dp), run_dashboard(), self_ping_loop())
+        await asyncio.gather(
+            _run_forever(lambda: run_webhook(bot, dp), "webhook"),
+            _run_forever(run_dashboard, "dashboard"),
+            _run_forever(self_ping_loop, "self_ping"),
+        )
     else:
-        await asyncio.gather(run_polling(bot, dp), run_dashboard(), self_ping_loop())
+        await asyncio.gather(
+            _run_forever(lambda: run_polling(bot, dp), "polling"),
+            _run_forever(run_dashboard, "dashboard"),
+            _run_forever(self_ping_loop, "self_ping"),
+        )
 
 
 if __name__ == "__main__":

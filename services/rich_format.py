@@ -59,52 +59,92 @@ def detect_poll_intent(text: str) -> Optional[Tuple[str, List[str]]]:
     Examples:
       - "poll: Best color? red / blue / green"
       - "vote: A) yes B) no C) maybe"
-      - "create a poll about X with options a, b, c"
+      - "create a poll about lunch with options pizza, pasta, salad"
+      - "which one should I pick: pizza or pasta or salad"
+      - "help me choose between tea | coffee | juice"
     """
     raw = (text or "").strip()
     low = raw.lower()
 
-    if not any(k in low for k in ("poll", "vote", "which one should", "choose between")):
+    if not any(k in low for k in ("poll", "vote", "which one should", "choose between", "pick between", "help me choose", "help me pick")):
         return None
 
-    # poll: question? a / b / c
-    m = re.match(r"(?:create\s+)?(?:a\s+)?poll\s*[:\-]\s*(.+)$", raw, re.I | re.S)
-    if not m:
-        m = re.match(r"vote\s*[:\-]\s*(.+)$", raw, re.I | re.S)
-    body = m.group(1).strip() if m else raw
+    body = raw
+    # strip leading verbs: "create a poll about …", "make me a vote - …"
+    m = re.match(
+        r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:create|make|start|send|give)\s+(?:me\s+)?(?:a\s+)?(?:poll|vote)\s*(?:about|for|on)?\s*[:\-]?\s*(.*)$",
+        raw, re.I | re.S,
+    )
+    if m and m.group(1).strip():
+        body = m.group(1).strip()
+    else:
+        m2 = re.match(r"^(?:poll|vote)\s*[:\-]\s*(.*)$", raw, re.I | re.S)
+        if m2:
+            body = m2.group(1).strip()
 
-    # Split question / options
     question = body
     options: List[str] = []
 
-    # A) B) C) style
-    parts = re.split(r"\s+(?=[A-D][\).:\-]\s*)", body)
-    if len(parts) >= 3:
-        question = parts[0].strip(" ?")
-        for p in parts[1:]:
-            opt = re.sub(r"^[A-D][\).:\-]\s*", "", p).strip()
-            if opt:
-                options.append(opt[:100])
+    # 1) lettered options: "A) yes B) no" / "a. yes b. no"
+    lettered = re.split(r"\s+(?=[A-Za-z][\)\.\:]\s)", body)
+    if len(lettered) >= 2 and re.match(r"^[A-Za-z][\)\.\:]\s", lettered[-1]):
+        if re.match(r"^[A-Za-z][\)\.\:]\s", lettered[0]):
+            question = "Vote"
+            opts_raw = lettered
+        else:
+            question = lettered[0].strip(" ?")
+            opts_raw = lettered[1:]
+        options = [re.sub(r"^[A-Za-z][\)\.\:]\s*", "", p).strip()[:100] for p in opts_raw]
+        options = [o for o in options if o]
 
-    # slash or comma options after ?
+    # 2) "options: a, b, c" / "options a, b, c" / "with options a / b / c"
+    if len(options) < 2:
+        m2 = re.search(r"(?:with\s+)?options?\s*[:\-]?\s+(.+)$", body, re.I)
+        if m2:
+            opts = [x.strip()[:100] for x in re.split(r"[,/|]|\s+or\s+", m2.group(1), flags=re.I) if x.strip()]
+            if len(opts) >= 2:
+                options = opts
+                q = re.sub(r"\s+with$", "", body[: m2.start()].strip(" :-"), flags=re.I)
+                question = q or question
+
+    # 3) pipe separated: "question | a | b | c" (also "choose between a | b | c")
+    if len(options) < 2 and "|" in body:
+        parts = [x.strip() for x in body.split("|") if x.strip()]
+        if len(parts) >= 3:
+            head = parts[0]
+            m4 = re.match(r"^(.*\b(?:choose|pick)(?:\s+between)?)\s+(\S+)$", head, re.I)
+            if m4 and len(parts) >= 3:
+                question = m4.group(1).strip(" ?")
+                options = [m4.group(2)[:100]] + [p[:100] for p in parts[1:]]
+            else:
+                question = head.rstrip(" ?")
+                options = [p[:100] for p in parts[1:]]
+
+    # 4) options after "?": "best color? red / blue / green"
     if len(options) < 2 and "?" in body:
         q, rest = body.split("?", 1)
-        question = q.strip() + "?"
         for sep in ("/", "|", ",", " or "):
             if sep in rest:
                 options = [x.strip()[:100] for x in rest.split(sep) if x.strip()]
+                question = q.strip() + "?"
                 break
 
-    # "options: a, b, c"
+    # 5) "pick: X or Y or Z" / "choose between X and Y" style
     if len(options) < 2:
-        m2 = re.search(r"options?\s*[:\-]\s*(.+)$", body, re.I)
-        if m2:
-            options = [x.strip()[:100] for x in re.split(r"[,/|]", m2.group(1)) if x.strip()]
-            question = body[: m2.start()].strip(" :-") or question
+        m3 = re.search(r"(?:choose between|pick between)\s+(.+)$", body, re.I)
+        if m3:
+            options = [x.strip()[:100] for x in re.split(r"\s+or\s+|\s+and\s+|,", m3.group(1), flags=re.I) if x.strip()]
+            question = body[: m3.start()].strip(" ?") or "Choose one"
+    if len(options) < 2 and ":" in body:
+        head, tail = body.split(":", 1)
+        if re.search(r"\s+or\s+|,", tail, re.I):
+            options = [x.strip()[:100] for x in re.split(r",|\s+or\s+", tail, flags=re.I) if x.strip()]
+            question = head.strip(" ?") or "Choose one"
 
     options = [o for o in options if o and len(o) <= 100][:10]
+    question = (question or "").strip()[:300]
     if len(options) >= 2 and question:
-        return question[:300], options
+        return question, options
     return None
 
 

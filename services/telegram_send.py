@@ -145,12 +145,16 @@ async def _plain_chunks(bot: Bot, chat_id: int, text: str, reply_to: Optional[in
                 reply_to_message_id=reply_to if i == 0 else None,
                 parse_mode=mode,
             )
-        except TelegramAPIError:
-            await bot.send_message(
-                chat_id,
-                chunk,
-                reply_to_message_id=reply_to if i == 0 else None,
-            )
+        except Exception:
+            # HTML parse failed (stray tags) — resend as plain text
+            try:
+                await bot.send_message(
+                    chat_id,
+                    chunk,
+                    reply_to_message_id=reply_to if i == 0 else None,
+                )
+            except Exception:
+                pass
 
 
 def _md_to_simple_html(text: str) -> str:
