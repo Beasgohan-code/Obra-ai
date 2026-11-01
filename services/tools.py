@@ -646,8 +646,11 @@ async def run_tool(name: str, arguments: Dict[str, Any], user_id: int = None) ->
             from config.settings import settings as _s
             if not getattr(_s, "ENABLE_SANDBOX", True):
                 return "Sandbox disabled.", None, None
+            import asyncio
             from services.sandbox import run_python
-            out, ok = run_python(arguments.get("code", ""))
+            out, ok = await asyncio.to_thread(
+                run_python, arguments.get("code", ""), timeout_hint=int(getattr(_s, "SANDBOX_TIMEOUT_SECONDS", 8) or 8)
+            )
             return (f"{'OK' if ok else 'ERR'}:\n{out}"), None, None
         if name == "github_list_repos":
             from services.github_tools import github_list_repos

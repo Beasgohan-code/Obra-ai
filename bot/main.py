@@ -49,6 +49,11 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(inline_router)
     dp.include_router(callbacks_router)
     dp.include_router(payments_router)
+    try:
+        from handlers.webapp import router as webapp_router
+        dp.include_router(webapp_router)
+    except Exception as e:
+        logger.warning("webapp router skipped: %s", e)
     return dp
 
 

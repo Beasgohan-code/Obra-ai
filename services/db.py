@@ -309,6 +309,72 @@ class Database:
             chats = (await cur.fetchone())[0]
             return {"events": events, "active_users": users, "blocked": blocked, "chats": chats, "hours": hours}
 
+    # ---------- Dashboard read APIs ----------
+    async def recent_users(self, hours: int = 24, limit: int = 50) -> List[Dict[str, Any]]:
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """SELECT user_id, COUNT(*) AS msgs, MAX(created_at) AS last_seen
+                   FROM usage_stats WHERE created_at>? AND user_id IS NOT NULL
+                   GROUP BY user_id ORDER BY last_seen DESC LIMIT ?""",
+                (cutoff, limit),
+            )
+            out = []
+            for r in await cur.fetchall():
+                d = dict(r)
+                d["premium"] = await self.is_premium(int(d["user_id"]))
+                d["blocked"] = await self.is_blocked(int(d["user_id"]))
+                out.append(d)
+            return out
+
+    async def conversations(self, limit: int = 50) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """SELECT c.chat_id, c.title, c.is_group, c.last_active,
+                          (SELECT COUNT(*) FROM conversations m WHERE m.chat_id=c.chat_id) AS messages
+                   FROM chat_meta c ORDER BY c.last_active DESC LIMIT ?""",
+                (limit,),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def recent_events(self, limit: int = 100) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT user_id, chat_id, event, meta, created_at FROM usage_stats ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def list_blocked(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT user_id, reason, created_at FROM blocked_users ORDER BY created_at DESC")
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def all_skills(self, limit: int = 100) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, user_id, name, instruction, created_at FROM user_skills ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def usage_series(self, days: int = 7) -> List[Dict[str, Any]]:
+        """Daily message counts for charts."""
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """SELECT substr(created_at,1,10) AS day, COUNT(*) AS c
+                   FROM usage_stats WHERE event IN ('message','reply') AND created_at > datetime('now', ?)
+                   GROUP BY day ORDER BY day""",
+                (f"-{int(days)} days",),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
     async def block_user(self, user_id: int, reason: str = ""):
         async with aiosqlite.connect(self.path) as db:
             await db.execute(

@@ -2,47 +2,46 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>obra</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>obra · workspace</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    body{font-family:system-ui;background:var(--tg-theme-bg-color,#0f1115);color:var(--tg-theme-text-color,#e6e6e6);margin:0;padding:1rem}
-    .card{background:var(--tg-theme-secondary-bg-color,#1a1d24);padding:1rem;border-radius:12px;margin-bottom:1rem}
-    button{background:var(--tg-theme-button-color,#3b82f6);color:var(--tg-theme-button-text-color,#fff);border:none;padding:.7rem 1.2rem;border-radius:10px;font-weight:600;width:100%;margin:.3rem 0}
-    h2{margin-top:0}
-    input,textarea{width:100%;box-sizing:border-box;padding:.6rem;border-radius:8px;border:1px solid #333;background:#111;color:#fff;margin:.4rem 0}
-  </style>
+  <link rel="stylesheet" href="/static/miniapp.css"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>"/>
 </head>
 <body>
-  <div class="card">
-    <h2>obra Mini App</h2>
-    <p id="user">Loading…</p>
-  </div>
-  <div class="card">
-    <p>Send a quick prompt to the bot chat:</p>
-    <textarea id="prompt" rows="3" placeholder="Ask obra anything…"></textarea>
-    <button onclick="sendPrompt()">Send to chat</button>
-  </div>
-  <div class="card">
-    <button onclick="tg.close()">Close</button>
-  </div>
-  <script>
-    const tg = window.Telegram.WebApp;
-    tg.ready();
-    tg.expand();
-    const u = tg.initDataUnsafe?.user;
-    document.getElementById('user').textContent = u
-      ? `Hello, ${u.first_name || 'user'} (id ${u.id})`
-      : 'Open from Telegram for full context';
+  <header>
+    <span class="dot"></span><b>obra</b>
+    <span id="who" style="color:var(--muted);font-size:.85rem"></span>
+    <span class="spacer"></span>
+    <span class="plan" id="plan">…</span>
+  </header>
+  <main>
+    <div id="auth-err" class="err"></div>
 
-    function sendPrompt() {
-      const text = document.getElementById('prompt').value.trim();
-      if (!text) return;
-      // Opens bot chat with prefilled text (Telegram deep link style via switchInline / sendData)
-      tg.sendData(JSON.stringify({ action: "prompt", text }));
-      tg.HapticFeedback?.notificationOccurred?.('success');
-      tg.close();
-    }
-  </script>
+    <div class="card">
+      <h3>Ask obra</h3>
+      <div class="chips" style="margin-bottom:.6rem">
+        <button class="chip active" data-agent="default">✨ Auto</button>
+        <button class="chip" data-agent="coder">💻 Coder</button>
+        <button class="chip" data-agent="researcher">🔍 Research</button>
+        <button class="chip" data-agent="writer">✍️ Writer</button>
+        <button class="chip" data-agent="solver">🚀 Solver</button>
+        <button class="chip" data-agent="terminal">⌨️ Terminal</button>
+      </div>
+      <div id="feed"></div>
+    </div>
+
+    <div class="card"><h3>Usage</h3><div id="usage">…</div></div>
+    <div class="card"><h3>Memory</h3><div id="memory">…</div></div>
+    <div class="card"><h3>Projects</h3><div id="projects">…</div></div>
+    <div class="card"><h3>Skills</h3><div id="skills">…</div></div>
+    <p class="hint">Replies arrive in your Telegram chat with the bot.</p>
+  </main>
+
+  <div id="composer">
+    <textarea id="prompt" rows="2" placeholder="Ask obra anything…"></textarea>
+    <button class="send" id="send" style="margin-top:.5rem">Send to chat ➤</button>
+  </div>
+  <script src="/static/miniapp.js"></script>
 </body>
 </html>

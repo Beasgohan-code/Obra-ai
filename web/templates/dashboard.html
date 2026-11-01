@@ -1,47 +1,96 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="dark">
 <head>
   <meta charset="utf-8"/>
-  <title>obra dashboard</title>
-  <style>
-    body{font-family:system-ui;background:#0f1115;color:#e6e6e6;margin:0;padding:1.5rem}
-    .card{background:#1a1d24;padding:1.2rem;border-radius:12px;margin-bottom:1rem}
-    h1{margin-top:0}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem}
-    .stat{font-size:1.6rem;font-weight:700}
-    input,button{padding:.5rem;border-radius:8px;border:1px solid #333;background:#111;color:#fff;margin:.2rem}
-    button{background:#3b82f6;border:none;cursor:pointer}
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="csrf" content="{{ csrf }}"/>
+  <title>obra · dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>"/>
 </head>
 <body>
-  <h1>obra admin</h1>
-  <div class="grid">
-    <div class="card"><div class="stat">{{ stats.active_users }}</div>Active users (24h)</div>
-    <div class="card"><div class="stat">{{ stats.chats }}</div>Chats</div>
-    <div class="card"><div class="stat">{{ stats.blocked }}</div>Blocked</div>
-    <div class="card"><div class="stat">{{ model }}</div>Model</div>
-  </div>
-  <div class="card">
-    <h3>Events (24h)</h3>
-    <ul>
-    {% for k,v in stats.events.items() %}
-      <li>{{ k }}: {{ v }}</li>
-    {% else %}
-      <li>No events yet</li>
-    {% endfor %}
-    </ul>
-  </div>
-  <div class="card">
-    <h3>Block / Unblock</h3>
-    <form method="post" action="/api/block" style="display:inline">
-      <input name="user_id" placeholder="user_id" required/>
-      <input name="reason" placeholder="reason"/>
-      <button type="submit">Block</button>
-    </form>
-    <form method="post" action="/api/unblock" style="display:inline">
-      <input name="user_id" placeholder="user_id" required/>
-      <button type="submit">Unblock</button>
-    </form>
-  </div>
+<div class="layout">
+  <aside class="sidebar">
+    <h1><span class="dot"></span>obra</h1>
+    <p class="sub">admin console</p>
+    <nav class="nav">
+      <button data-sec="overview" class="active">📊 Overview</button>
+      <button data-sec="providers">🧠 Providers & models</button>
+      <button data-sec="conversations">💬 Conversations</button>
+      <button data-sec="users">👥 Users</button>
+      <button data-sec="skills">⏰ Skills</button>
+      <button data-sec="logs">📜 Logs</button>
+      <button data-sec="security">🔒 Security</button>
+    </nav>
+    <div class="foot">
+      <button id="themeBtn" class="icon-btn">☀️ Light</button>
+      <a href="/logout">Logout</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h2>Dashboard</h2>
+      <div class="actions">
+        <span class="chip">model <b>{{ model }}</b></span>
+        <span class="chip">mode <b>{{ stats.hours }}h window</b></span>
+      </div>
+    </div>
+
+    <section id="sec-overview" class="section active">
+      <div class="grid">
+        <div class="card"><div class="label">Active users 24h</div><div class="value" id="stat-users">–</div></div>
+        <div class="card"><div class="label">Chats</div><div class="value" id="stat-chats">–</div></div>
+        <div class="card"><div class="label">Messages 24h</div><div class="value" id="stat-msgs">–</div></div>
+        <div class="card"><div class="label">Replies 24h</div><div class="value" id="stat-replies">–</div></div>
+        <div class="card"><div class="label">Blocked</div><div class="value" id="stat-blocked">–</div></div>
+        <div class="card"><div class="label">Tools</div><div class="value" id="stat-tools">–</div></div>
+        <div class="card"><div class="label">Uptime</div><div class="value" id="stat-uptime">–</div></div>
+        <div class="card"><div class="label">Model</div><div class="value" id="stat-model" style="font-size:1rem;padding-top:.5rem">–</div></div>
+      </div>
+      <div class="panel">
+        <h3>Messages / day <span class="tag">last 7 days</span></h3>
+        <div id="chart" class="loading">Loading…</div>
+      </div>
+      <div class="panel">
+        <h3>LLM providers <span class="tag" id="stat-mode">–</span></h3>
+        <div class="pill-list" id="prov-pills"></div>
+      </div>
+    </section>
+
+    <section id="sec-providers" class="section">
+      <div class="panel"><h3>Provider chain & health</h3><div id="prov-table" class="loading">Loading…</div></div>
+    </section>
+
+    <section id="sec-conversations" class="section">
+      <div class="panel"><h3>Conversations</h3><div id="conv-table" class="loading">Loading…</div></div>
+    </section>
+
+    <section id="sec-users" class="section">
+      <div class="panel"><h3>Active users (24h)</h3><div id="users-table" class="loading">Loading…</div></div>
+    </section>
+
+    <section id="sec-skills" class="section">
+      <div class="panel"><h3>Scheduled skills</h3><div id="skills-table" class="loading">Loading…</div></div>
+    </section>
+
+    <section id="sec-logs" class="section">
+      <div class="panel"><h3>Event log</h3><div id="logs-table" class="loading">Loading…</div></div>
+    </section>
+
+    <section id="sec-security" class="section">
+      <div class="panel">
+        <h3>Block / unblock a user</h3>
+        <div class="row">
+          <input id="block-uid" type="number" placeholder="user_id"/>
+          <input id="block-reason" placeholder="reason"/>
+          <button class="btn danger" id="do-block">Block</button>
+        </div>
+      </div>
+      <div class="panel"><h3>Blocked users</h3><div id="blocked-table" class="loading">Loading…</div></div>
+    </section>
+  </main>
+</div>
+<script src="/static/app.js"></script>
 </body>
 </html>
