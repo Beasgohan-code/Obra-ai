@@ -1,5 +1,6 @@
 import aiosqlite
 import json
+import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from config.settings import settings
@@ -104,16 +105,93 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     payload TEXT NOT NULL,
     created_at TEXT
 );
+
+-- Fallback "vector" memory (keyword store) used when chromadb is unavailable.
+CREATE TABLE IF NOT EXISTS semantic_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,          -- 'user' | 'group'
+    scope_id TEXT NOT NULL,       -- user_id or chat_id as string
+    text TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sem_scope ON semantic_memory(scope, scope_id);
+
+-- Idempotent processed payments (Telegram Stars charge ids).
+CREATE TABLE IF NOT EXISTS processed_payments (
+    charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    payload TEXT,
+    amount INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
+
+# Idempotent migrations applied on top of SCHEMA for existing databases.
+# Each entry: (version, name, sql). Never edit applied entries — append new ones.
+MIGRATIONS = [
+    (1, "semantic_memory_fallback", """
+CREATE TABLE IF NOT EXISTS semantic_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sem_scope ON semantic_memory(scope, scope_id);
+"""),
+    (2, "processed_payments", """
+CREATE TABLE IF NOT EXISTS processed_payments (
+    charge_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    payload TEXT,
+    amount INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+"""),
+    (3, "business_connections", """
+CREATE TABLE IF NOT EXISTS business_connections (
+    connection_id TEXT PRIMARY KEY,
+    user_id INTEGER,
+    is_enabled INTEGER DEFAULT 1,
+    can_reply INTEGER DEFAULT 1,
+    raw TEXT DEFAULT '{}',
+    updated_at TEXT
+);
+"""),
+]
 
 
 class Database:
     def __init__(self, path: str = None):
         self.path = path or settings.DB_PATH
 
+    async def _connect(self):
+        """Open a connection with WAL + busy timeout for transaction safety."""
+        conn = await aiosqlite.connect(self.path, timeout=15)
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=15000")
+        await conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
     async def init(self):
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
+            # Migration runner: apply idempotent migrations for existing DBs.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)"
+            )
+            cur = await db.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations")
+            current = (await cur.fetchone())[0]
+            for version, name, sql in MIGRATIONS:
+                if version > current:
+                    await db.executescript(sql)
+                    await db.execute(
+                        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?,?,?)",
+                        (version, name, datetime.utcnow().isoformat()),
+                    )
             await db.commit()
 
     async def add_message(self, chat_id: int, role: str, content: str):
@@ -361,7 +439,8 @@ class Database:
             )
             await db.commit()
 
-    async def pop_pending(self, pid: str):
+    async def pop_pending(self, pid: str, max_age_seconds: int = 900):
+        """Pop a pending action; expires after max_age_seconds (default 15 min)."""
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT * FROM pending_actions WHERE id=?", (pid,))
@@ -370,9 +449,85 @@ class Database:
                 await db.execute("DELETE FROM pending_actions WHERE id=?", (pid,))
                 await db.commit()
                 d = dict(row)
+                try:
+                    age = (datetime.utcnow() - datetime.fromisoformat(d["created_at"])).total_seconds()
+                    if age > max_age_seconds:
+                        return None  # expired — treat as gone
+                except Exception:
+                    pass
                 d["payload"] = json.loads(d["payload"])
                 return d
             return None
+
+    # ---------- Payments idempotency ----------
+    async def is_payment_processed(self, charge_id: str) -> bool:
+        if not charge_id:
+            return False
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT 1 FROM processed_payments WHERE charge_id=?", (charge_id,))
+            return await cur.fetchone() is not None
+
+    async def record_processed_payment(self, charge_id: str, user_id: int, payload: str = "", amount: int = 0) -> bool:
+        """Returns True if newly recorded, False if this charge was already processed."""
+        if not charge_id:
+            return False
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "INSERT OR IGNORE INTO processed_payments (charge_id, user_id, payload, amount, created_at) VALUES (?,?,?,?,?)",
+                (charge_id, user_id, payload, amount, datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+            return cur.rowcount == 1
+
+    async def clear_pending_for_user(self, user_id: int) -> int:
+        """Drop all pending (unconfirmed) actions of a user. Returns count removed."""
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("DELETE FROM pending_actions WHERE user_id=?", (user_id,))
+            await db.commit()
+            return cur.rowcount or 0
+
+    # ---------- Fallback semantic memory (no chromadb needed) ----------
+    async def add_semantic_memory(self, scope: str, scope_id, text: str, metadata: dict = None):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT INTO semantic_memory (scope, scope_id, text, metadata, created_at) VALUES (?,?,?,?,?)",
+                (scope, str(scope_id), text, json.dumps(metadata or {}), datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+
+    async def search_semantic_memory(self, scope: str, scope_id, query: str, n: int = 5) -> List[str]:
+        """Keyword search over stored texts (LIKE on word tokens)."""
+        import re as _re
+        tokens = [t for t in _re.findall(r"\w+", (query or "").lower()) if len(t) > 2][:6]
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            if tokens:
+                like = " AND ".join("LOWER(text) LIKE ?" for _ in tokens)
+                params: List[Any] = [scope, str(scope_id)] + [f"%{t}%" for t in tokens]
+                cur = await db.execute(
+                    f"SELECT text FROM semantic_memory WHERE scope=? AND scope_id=? AND {like} "
+                    f"ORDER BY rowid DESC LIMIT ?",
+                    (*params, n),
+                )
+            else:
+                cur = await db.execute(
+                    "SELECT text FROM semantic_memory WHERE scope=? AND scope_id=? ORDER BY rowid DESC LIMIT ?",
+                    (scope, str(scope_id), n),
+                )
+            rows = await cur.fetchall()
+            if rows:
+                return [r["text"] for r in rows]
+            # no keyword hits — return most recent entries as a weak fallback
+            cur = await db.execute(
+                "SELECT text FROM semantic_memory WHERE scope=? AND scope_id=? ORDER BY rowid DESC LIMIT ?",
+                (scope, str(scope_id), n),
+            )
+            return [r["text"] for r in await cur.fetchall()]
+
+    async def clear_semantic_memory(self, scope: str, scope_id):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM semantic_memory WHERE scope=? AND scope_id=?", (scope, str(scope_id)))
+            await db.commit()
 
     async def save_business_connection(self, connection_id: str, user_id: int, is_enabled: bool = True, can_reply: bool = True, raw: dict = None):
         async with aiosqlite.connect(self.path) as db:

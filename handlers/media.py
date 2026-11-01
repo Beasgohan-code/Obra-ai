@@ -24,9 +24,9 @@ async def on_photo(message: Message, bot: Bot):
         if not ok:
             await message.answer("⏳ Rate limit.")
             return
-        ok, _ = await db.check_daily_quota(user.id)
-        if not ok:
-            await message.answer("📅 Daily quota reached.")
+        ok_q, reason = await db.check_quotas(user.id)
+        if not ok_q:
+            await message.answer(f"🚫 {reason}")
             return
 
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
@@ -38,7 +38,8 @@ async def on_photo(message: Message, bot: Bot):
     prompt = message.caption or "Describe this image in detail. If there is text, OCR it."
     await message.answer("🖼️ Analyzing image…")
     desc = await describe_image(data, prompt)
-    await message.answer(desc[:4000])
+    from services.telegram_send import send_rich
+    await send_rich(bot, message.chat.id, desc[:4000] or "No description.", reply_to=message.message_id)
     await db.add_message(message.chat.id, "user", f"[photo] {prompt}")
     await db.add_message(message.chat.id, "assistant", desc[:2000])
     await db.log_event(user.id, message.chat.id, "vision", {})
@@ -81,6 +82,15 @@ async def on_document(message: Message, bot: Bot):
     doc = message.document
     if not doc:
         return
+    if user.id not in settings.admin_list:
+        ok, _ = await db.check_rate_limit(user.id)
+        if not ok:
+            await message.answer("⏳ Rate limit.")
+            return
+        ok_q, reason = await db.check_quotas(user.id)
+        if not ok_q:
+            await message.answer(f"🚫 {reason}")
+            return
     # size limit ~15MB for safety
     if doc.file_size and doc.file_size > 15 * 1024 * 1024:
         await message.answer("File too large (max ~15MB).")

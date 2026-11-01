@@ -141,7 +141,8 @@ async def chat_handler(message: Message, bot: Bot):
         await message.answer(qr, parse_mode="Markdown")
         await db.add_message(message.chat.id, "user", text)
         await db.add_message(message.chat.id, "assistant", qr)
-        
+        return  # BUGFIX: previously fell through and ALSO sent a full LLM reply
+
     # Premium / usage intents (natural language — no commands)
     low_intent = text.lower().strip()
     if low_intent in ("upgrade", "premium", "buy premium", "stars", "buy stars") or "buy premium" in low_intent:

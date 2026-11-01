@@ -38,6 +38,7 @@ When the user asks to build, create, make, write, or fix software:
 # Output shape
 - Use Markdown headings (##), lists, and tables so Rich Messages render well.
 - For long deliverables: summary first, then files, then how to run.
+- If the user asks what you can do / for commands, mention /help briefly.
 """
 
 SECRETARY_PERSONA = """You are obra as the account owner's private secretary.
