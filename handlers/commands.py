@@ -247,6 +247,35 @@ async def cmd_cancel(message: Message):
     await message.answer(t(lang, "cancelled") + (f" ({n})" if n else ""))
 
 
+# ---------------------------------------------------------------- search
+@router.message(Command("search"))
+async def cmd_search(message: Message, command: CommandObject):
+    """Search this chat's history + long-term memory for a keyword."""
+    q = (command.args or "").strip()
+    if not q:
+        await message.answer("🔎 Usage: <code>/search what you are looking for</code>", parse_mode="HTML")
+        return
+    uid = message.from_user.id
+    hist = await db.search_history(message.chat.id, q, limit=8)
+    try:
+        mem = await vector_memory.search_memory(uid, q, n=5)
+    except Exception:
+        mem = []
+    parts = []
+    if hist:
+        parts.append("<b>In this chat:</b>")
+        for h in hist:
+            snippet = (h["content"] or "")[:160].replace("\n", " ")
+            parts.append(f"• <i>{h['role']}</i>: {snippet}")
+    if mem:
+        parts.append("<b>From memory:</b>")
+        for m in mem:
+            parts.append(f"• {m[:160]}")
+    if not parts:
+        parts.append(f"Nothing found for <code>{q}</code>.")
+    await message.answer("\n".join(parts)[:4000], parse_mode="HTML")
+
+
 # ---------------------------------------------------------------- catch-all
 @router.message(F.text.startswith("/"))
 async def cmd_unknown(message: Message):

@@ -217,6 +217,25 @@ class Database:
             await db.execute("DELETE FROM conversations WHERE chat_id=?", (chat_id,))
             await db.commit()
 
+    async def search_history(self, chat_id: int, query: str, limit: int = 10) -> List[Dict[str, str]]:
+        """Keyword search in one chat's history."""
+        import re as _re
+        tokens = [t for t in _re.findall(r"\w+", (query or "").lower()) if len(t) > 2][:6]
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            if tokens:
+                like = " AND ".join("LOWER(content) LIKE ?" for _ in tokens)
+                cur = await db.execute(
+                    f"SELECT role, content, created_at FROM conversations WHERE chat_id=? AND {like} ORDER BY rowid DESC LIMIT ?",
+                    (chat_id, *[f"%{t}%" for t in tokens], limit),
+                )
+            else:
+                cur = await db.execute(
+                    "SELECT role, content, created_at FROM conversations WHERE chat_id=? ORDER BY rowid DESC LIMIT ?",
+                    (chat_id, limit),
+                )
+            return [dict(r) for r in await cur.fetchall()]
+
     async def set_user_memory(self, user_id: int, name=None, preferences=None, notes=None):
         async with aiosqlite.connect(self.path) as db:
             existing = await self.get_user_memory(user_id)

@@ -118,6 +118,7 @@ async def self_ping_loop():
     url = (os.environ.get("RENDER_EXTERNAL_URL") or getattr(settings, "PUBLIC_URL", "") or "").rstrip("/")
     if not url:
         logger.info("self_ping off (set PUBLIC_URL or RENDER_EXTERNAL_URL)")
+        await asyncio.Event().wait()  # stay alive without busy-looping
         return
     import aiohttp
     endpoint = url + "/health"
@@ -176,6 +177,7 @@ async def main():
             BotCommand(command="project", description="Name this chat project"),
             BotCommand(command="tts", description="Voice replies on/off"),
             BotCommand(command="usage", description="Usage & limits"),
+            BotCommand(command="search", description="Search chat + memory"),
             BotCommand(command="cancel", description="Cancel pending actions"),
             BotCommand(command="ping", description="Ping"),
             BotCommand(command="status", description="Bot status"),
